@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>时枝笺</title>
+<link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="%23166558" stroke-width="2.2" stroke-linecap="round"><path d="M12 22V6"/><path d="M12 14c0-4-6-4-6-9"/><path d="M12 10c0-4 6-4 6-7"/></svg>'>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;700;900&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="vendor/katex/katex.min.css">
+
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="side-head">
+      <div class="logo"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 22V6"/><path d="M12 14c0-4-6-4-6-9"/><path d="M12 10c0-4 6-4 6-7"/></svg></div>
+      <div><h1>时枝笺</h1><small>BRANSLIP · 本地 Markdown 记录本</small></div>
+      <button id="importBtn" class="head-btn" title="导入对话（.json）" aria-label="导入对话"></button>
+    </div>
+    <div class="search-box">
+      <span id="searchIcon"></span>
+      <input id="searchInput" placeholder="搜索话题与记录…">
+      <button class="scope-btn" id="scopeBtn" title="切换搜索范围">本话题</button>
+    </div>
+    <div class="quick-tags">
+      <button class="quick-tag" data-tag="待补完">#待补完</button>
+    </div>
+ 
+    <div id="treeScroll"></div>
+    <div class="side-foot">
+      <button class="new-root" id="newRootBtn"></button>
+      <div class="foot-row">
+        <button id="themeBtn" title="主题与背景"></button>
+        <button class="export-btn" id="rescanBtn" title="从磁盘重新读取（在外部改过文件后点这个）"></button>
+        <button class="export-btn" id="folderBtn" title="更改存储文件夹"></button>
+      </div>
+      <div class="save-state">
+        <span class="dot" id="saveDot" title=""></span>
+        <span id="saveText">未连接</span>
+        <button id="trashBtn" title="回收站" aria-label="回收站" class="trash-btn"></button>
+      </div>
+    </div>
+  </aside>
+  <div id="scrim"></div>
+  <main id="main">
+    <header id="topbar">
+      <button id="hamburger" aria-label="打开侧栏" title="打开侧栏"></button>
+      <nav class="crumbs" id="crumbs"></nav>
+      <div class="top-right">
+        <span class="top-count" id="topCount"></span>
+        <button class="merge-btn" id="pickItBtn"></button>
+        <button class="merge-btn" id="mergeBtn"></button>
+        <button class="sub-add" id="subAddBtn"></button>
+      </div>
+    </header>
+
+    <button class="nav-back-float" id="navBackFloat"
+          title="返回上一个界面" aria-label="返回上一个界面">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" stroke-width="2.2"
+         stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="15 18 9 12 15 6"/>
+    </svg>
+
+    </button>
+    <div class="pin-bar" id="pinBar"></div>
+    <div id="entriesScroll"><div id="entries"></div></div>
+    <div id="composer">
+      <div class="reply-bar" id="replyBar">
+        <span style="color:var(--accent);flex:none">↩</span>
+        <span class="r-text" id="replyText"></span>
+        <button class="r-x" id="replyCancel">✕</button>
+      </div>
+      <div class="relevance-bar" id="relevanceBar">
+        <span style="color:var(--accent);flex:none">∝</span>
+        <span class="r-text" id="relevanceText"></span>
+        <button class="r-x" id="relevanceCancel">✕</button>
+      </div>
+      <div class="attach-preview" id="attachPreview"></div>   <!-- 新增 -->
+      <div class="composer-inner">
+        <button id="mdBtn" title="Markdown 格式" aria-label="Markdown 格式"></button>
+        <button id="attachBtn" title="插入图片" aria-label="插入图片"></button>
+        <textarea id="inputArea" rows="1" placeholder="Enter 发送 · Shift + Enter 换行 · 可直接粘贴 / 拖入图片"></textarea>
+        <button id="sendBtn" title="发送（Enter）" aria-label="发送"></button>
+      </div>
+    </div>
+    <div class="date-jump" id="dateJump"></div>
+    <button class="scroll-bottom" id="scrollBottomBtn" title="回到底部">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+    </button>
+    <!-- ★ 新增 -->
+    <button class="scroll-top" id="scrollTopBtn" title="对齐到当前记录顶部">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 19V5M5 12l7-7 7 7"/>
+      </svg>
+    </button>
+  </main>
+</div>
+
+<div id="gate">
+  <div class="gate-card">
+    <div class="logo"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 22V6"/><path d="M12 14c0-4-6-4-6-9"/><path d="M12 10c0-4 6-4 6-7"/></svg></div>
+    <div class="gate-title">时枝笺</div>
+    <p class="gate-sub">多级话题记录本 · 数据以纯 Markdown 文件保存在本地文件夹</p>
+    <pre class="gate-tree">📁 选定的文件夹/
+├─ 📁 工作/
+│   ├─ 📄 _记录.md
+│   ├─ 📄 _顺序.json     ← 子话题排序
+│   ├─ 📄 _置顶.json     ← 置顶的消息
+│   ├─ 📁 attachments/   ← 图片附件
+│   └─ 📁 产品改版/
+│       └─ 📁 会议纪要/ …
+└─ 📁 生活/
+    └─ 📄 _记录.md</pre>
+    <button class="new-root" id="gatePick">选择存储文件夹</button>
+    <button class="ghost-btn hidden" id="gateReconnect"></button>
+    <p class="gate-note" id="gateNote">需要支持「文件系统访问」的浏览器（Chrome / Edge 桌面版），Android Chrome可使用。<br>建议选择一个专用文件夹；它同时也可以是网盘同步目录。</p>
+  </div>
+</div>
+
+<div id="modalRoot"></div>
+<div id="menuRoot"></div>
+<div id="toastRoot"></div>
+<div class="multi-bar" id="multiBar">
+  <span class="mb-count">已选 0 条</span>
+  <button class="mb-fold">折叠</button>
+  <button class="mb-cancel">取消</button>
+</div>
+
+<script type="importmap">
+  {
+    "imports": {
+      "katex": "./vendor/katex/katex.mjs"
+    }
+  }
+  </script>
+  <script type="module">import('./app.js').then(m => m.boot())</script>
+
+</body>
+</html>
