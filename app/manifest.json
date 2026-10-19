@@ -1,0 +1,13 @@
+{
+    "name": "时枝笺",
+    "short_name": "时枝笺",
+    "description": "本地 Markdown 记录本",
+    "start_url": "./shizhijian.html",
+    "display": "standalone",
+    "background_color": "#F7F4EC",
+    "theme_color": "#166558",
+    "icons": [
+      { "src": "./icon-192.png", "sizes": "192x192", "type": "image/png" },
+      { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png" }
+    ]
+  }

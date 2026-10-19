@@ -15,3 +15,7 @@ Thumbs.db
 # 日志
 *.log
 npm-debug.log*
+
+src-tauri/target/
+src-tauri/gen/schemas/
+node_modules/

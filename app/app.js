@@ -1,0 +1,729 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Okine
+// 时枝笺 · BRANSLIP —— 见根目录 LICENSE
+
+'use strict';
+/* ================= app.js =================
+ * 启动器 + 主控编排。
+ *
+ * 包含：
+ *   - IndexedDB 句柄持久化
+ *   - 偏好读写（localStorage）
+ *   - 主区编排（renderTop / renderAll）
+ *   - DeepSeek 导入
+ *   - 图标初始化 / 全局快捷键 / 侧栏按钮
+ *   - 启动流程（gate / connect / 权限）
+ *   - 所有 wireXxx 注入
+ *
+ */
+import {
+  boot, wireBoot, connect,
+  loadPrefs, savePrefs, collapseAll,
+} from './boot.js';
+import { Store } from './store.js';
+import { Storage } from './storage.js';
+import { $, esc } from './utils.js';
+import { I } from './icons.js';
+import {
+   findTopicByRefId,
+} from './md.js';
+import {
+  dirOf, writeOrder, rewriteAllOrders,
+} from './io.js';
+import { fmtStamp, localIdFromMs } from './format.js';
+import { atomicWriteText } from './writeSecurity.js';
+import { clearURLCache } from './image.js';
+import { 
+  toast, runTopEsc, openMovePicker, confirmDialog, openModal, closeModal 
+} from './ui.js';
+import { scanChildren } from './loader.js';
+import { enqueue,waitForIdle } from './writer.js';
+import {
+  findNode, findByPath, pathOf, pOf, 
+} from './tree-utils.js';
+import {
+  select, wireTree, viewBack, pushViewState
+} from './tree.js';
+import { renderTree, syncScopeBtn } from './tree-render.js';
+import {
+  renderEntries, wireEntries,
+} from './entries.js';
+import {
+    jumpToBlock, jumpToStamp, jumpToRow,
+  } from './entries-jump.js';
+// 新增
+import {
+  collectMerged, exitMerge, renderMerged, wireMerge,
+} from './entries-merge.js';
+
+import {
+  setReply, refreshPreview, wireComposer, setRelevance,
+} from './composer.js';
+import { wireTrash } from './trash.js';
+import { openPinPage } from './pages.js';
+import { parseDeepSeekExport, importDeepSeekAsTopics } from './import-deepseek.js';
+import { parseClaudeExport, importClaudeAsTopics } from './import-claude.js';
+import { parseQwenExport, importQwenAsTopics } from './import-qwen.js';
+import { parseTelegramExport, importTelegramAsTopics } from './import-telegram.js';
+import { parseQQExport, importQQAsTopics } from './import-qq.js';
+
+import { wireImage, clearPendingForNode } from './image.js';
+import { initToolbar, syncToolbar } from './toolbar.js';
+
+
+
+
+
+
+
+/* 先建工具栏：importBtn / rescanBtn / folderBtn 的监听在下面按 id 绑定 */
+initToolbar();
+
+/* 所有存在未发送草稿的话题 id（按写入顺序） */
+function draftTopicIds() {
+  const ids = new Set(Store.ui.drafts.keys());
+  const cur = Store.ui.selectedId;
+  const ta  = document.querySelector('#inputArea');
+  /* 当前话题的 textarea 可能还没触发 input（极端情况），补一道保险 */
+  if (cur && ta && ta.value.trim()) ids.add(cur);
+  return [...ids];
+}
+
+/* ============================================================
+ * 主区编排
+ * ============================================================ */
+
+function renderTop() {
+  const cr = $('#crumbs');
+
+  if (Store.ui.merged) {
+    const list = collectMerged();
+    cr.innerHTML = '<span class="crumb cur">' +
+      (Store.ui.merged === 'all' ? '全部话题' : ('合并 ' + Store.ui.merged.length + ' 个话题')) + '</span>';
+    $('#topCount').textContent = list.length + ' 条记录';
+    return;
+  }
+
+  const n = findNode(Store.ui.selectedId);
+  if (!n) {
+    cr.innerHTML = '<span class="crumb cur">时枝笺</span>';
+    $('#topCount').textContent = '';
+    return;
+  }
+  const p = pathOf(n);
+  cr.innerHTML = p.map((x, i) =>
+    '<button class="crumb' + (i === p.length - 1 ? ' cur' : '') +
+    '" data-crumb="' + x.id + '">' + esc(x.title) + '</button>'
+  ).join('<span class="sep">›</span>');
+  $('#topCount').textContent = n.entries.length + ' 条记录';
+}
+
+function updateComposer() {
+  const merged = !!Store.ui.merged;
+  const n = findNode(Store.ui.selectedId);
+  const ta = $('#inputArea');
+  const sb = $('#sendBtn');
+
+  ta.disabled = merged;
+  ta.placeholder = merged
+    ? '时间流视图下不可写入，请先选一个话题'
+    : (n ? '记一条到「' + n.title + '」…' : '');
+  if (sb) sb.disabled = merged;
+}
+
+function renderMain() { renderTop(); renderEntries(); updateComposer(); }
+function renderAll() { renderTree(); renderMain(); syncToolbar(); }
+function updateNavBackTop() {
+  const topbar = document.querySelector('#topbar');
+  const th = topbar ? topbar.offsetHeight : 60;
+
+  /* 恒定预留出置顶条的高度：
+     chip 38px + pin-bar 上下 padding 各 6px = 50px
+     无论置顶条显示与否，这段空间都空着 */
+  const PIN_BAR_RESERVE = 50;
+  const GAP = 10;
+
+  document.documentElement.style.setProperty(
+    '--nav-btn-top',
+    (th + PIN_BAR_RESERVE + GAP) + 'px'
+  );
+}
+
+const topbarEl = document.querySelector('#topbar');
+if (topbarEl) new ResizeObserver(updateNavBackTop).observe(topbarEl);
+window.addEventListener('resize', updateNavBackTop);
+updateNavBackTop();
+/* ============================================================
+ * DeepSeek 导入
+ * ============================================================ */
+
+const importPick = document.createElement('input');
+importPick.type = 'file';
+importPick.accept = '.json,.txt,application/json';
+importPick.style.display = 'none';
+document.body.appendChild(importPick);
+
+/* ---------- 导入确认弹窗 ---------- */
+async function showImportConfirmDialog(source, count) {
+  return new Promise(resolve => {
+    let photoDir = null;
+    let confirmed = false; // ★ 新增：记录是否是用户主动确认的
+
+    const sourceName = {
+      deepseek: 'DeepSeek', claude: 'Claude', qwen: '千问', telegram: 'Telegram', qq: 'QQ'
+    }[source] || source;
+
+    const md = openModal(
+      `<h3>确认导入</h3>
+       <p class="sub">检测到 <b>${sourceName}</b> 导出格式。<br>包含 <b>${count}</b> 个话题。</p>
+       <div style="margin:14px 0; padding:12px; background:var(--paper); border-radius:8px;">
+         <p style="font-size:12.5px; margin-bottom:8px; color:var(--ink2);">如果导出包含图片，请选择对应的文件夹以便一并导入：</p>
+         <div style="display:flex; align-items:center; gap:10px;">
+           <button type="button" class="m-btn ghost" id="pickPhotoBtn" style="padding:6px 12px; font-size:12px; flex:none;">选择图片文件夹</button>
+           <span id="photoStatus" style="font-size:12px; color:var(--ink3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">未选择（仅保留文字与路径）</span>
+         </div>
+       </div>
+       <div class="modal-btns">
+         <button class="m-btn ghost" data-close>取消</button>
+         <button class="m-btn" data-ok style="background:var(--accent);color:#F5F1E4">下一步</button>
+       </div>`,
+      // ★ 修改：onClose 根据 confirmed 决定返回值
+      () => resolve({ ok: confirmed, photoDir })
+    );
+
+    md.querySelector('#pickPhotoBtn').addEventListener('click', async () => {
+      try {
+        if (Storage.isTauri) {
+          const dir = await window.__TAURI__.core.invoke('plugin:dialog|open', {
+            options: { directory: true, multiple: false, title: '选择图片文件夹' },
+          });
+          if (dir) {
+            photoDir = dir;
+            md.querySelector('#photoStatus').textContent = dir.split(/[\\\/]/).pop() || dir;
+          }
+        } else {
+          const dir = await window.showDirectoryPicker({ mode: 'read' });
+          if (dir) {
+            photoDir = dir;
+            md.querySelector('#photoStatus').textContent = dir.name;
+          }
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') toast('选择文件夹失败：' + (e.message || e));
+      }
+    });
+
+    md.querySelector('[data-ok]').addEventListener('click', () => {
+      confirmed = true; // ★ 标记为确认
+      closeModal();     // 此时会触发 onClose -> resolve({ ok: true, photoDir })
+    });
+  });
+}
+/* 导入失败时，把错误详情写到所选父话题目录，方便事后排查。
+   文件名以 _ 开头，loader 不会把它当记录/月份文件。 */
+async function writeImportFailureReport(parent, err, meta) {
+  const pdir = dirOf(parent);
+  if (!pdir) {
+    toast('导入失败，且目标目录不可用，错误日志未写入');
+    return;
+  }
+  const now = Date.now();
+  const name = '_导入失败-' + localIdFromMs(now) + '.md';
+  const parentPath = pathOf(parent).map(x => x.title).filter(Boolean).join(' / ') || '根目录';
+  const detail = String((err && err.stack) || (err && err.message) || err || '未知错误')
+    .replace(/```/g, "'''");
+  const body = [
+    '# 导入失败 · ' + fmtStamp(now),
+    '',
+    '- 时间：' + fmtStamp(now),
+    '- 来源：' + (meta.source || '未知'),
+    '- 文件：' + (meta.fileName || '未知'),
+    '- 识别到的对话数：' + (meta.count || 0),
+    '- 目标父话题：' + parentPath,
+    '',
+    '## 错误详情',
+    '',
+    '```text',
+    detail,
+    '```',
+    '',
+  ].join('\n');
+
+  const r = await enqueue(() => atomicWriteText(pdir, name, body));
+  if (r.ok) toast('已把错误详情写入：' + name);
+  else toast('错误详情写入失败：' + ((r.err && r.err.message) || r.err));
+}
+
+/* ---------- 核心导入流程 ---------- */
+async function onImportFile(file) {
+  const text = await file.text();
+
+  const attempts = [
+    ['deepseek', parseDeepSeekExport, importDeepSeekAsTopics],
+    ['claude',   parseClaudeExport,   importClaudeAsTopics],
+    ['qwen',     parseQwenExport,     importQwenAsTopics],
+    ['telegram', parseTelegramExport, importTelegramAsTopics],
+    ['qq',       parseQQExport,       importQQAsTopics],
+  ];
+
+  let conversations = null, source = '', importFn = null;
+  const _warn = console.warn;
+  console.warn = () => {}; // 静音探测期的警告
+  for (const [src, parseFn, imp] of attempts) {
+    try {
+      conversations = parseFn(text);
+      source = src;
+      importFn = imp;
+      break;
+    } catch (e) {}
+  }
+  console.warn = _warn; // 恢复
+
+  if (!conversations) {
+    toast('无法识别的文件格式');
+    return;
+  }
+
+  // ★ 弹出确认与图片文件夹选择
+  const { ok, photoDir } = await showImportConfirmDialog(source, conversations.length);
+  if (!ok) return;
+
+  const hint = conversations.length === 1
+    ? '把「' + conversations[0].title + '」导入到哪个话题下？'
+    : '把 ' + conversations.length + ' 个对话导入到哪个话题下？';
+
+  openMovePicker(hint, [], async (parentId) => {
+    const parent = findNode(parentId);
+    if (!parent) { toast('找不到目标话题'); return; }
+    try {
+      const nodes = [];
+      const r = await enqueue(async (report) => {
+        // ★ 把 photoDir 透传给 importFn
+        const created = await importFn(dirOf(parent), conversations, report, { photoDir });
+        for (const n of created) { parent.children.push(n); nodes.push(n); }
+        Store.rebuildIndex();
+        Store.resetMetaBuilt();
+        await writeOrder(parent);
+      });
+      /* enqueue 永远 resolve，失败在 r.ok 里 —— 不能靠 try/catch 捕获 */
+      if (!r.ok) throw (r.err || new Error('磁盘写入失败'));
+      /* importAsTopics 会逐对话 catch；如果全失败，这里仍然是 ok */
+      if (!nodes.length) throw new Error('导入任务完成，但没有任何话题被写入（详见控制台）');
+
+      renderAll();
+      if (nodes[0]) select(nodes[0].id);
+      toast('已导入 ' + nodes.length + ' 个话题，共 ' +
+        nodes.reduce((s, n) => s + n.entries.length, 0) + ' 条记录');
+      console.log('[import] 识别为', source, '，解析出', conversations.length, '个对话');
+    } catch (e) {
+      console.error('[import]', e);
+      /* 可能已经有一部分话题进了内存，先如实刷新 */
+      renderAll();
+      toast('导入失败：' + ((e && e.message) || e));
+      await writeImportFailureReport(parent, e, {
+        source,
+        fileName: file.name,
+        count: conversations.length,
+      });
+    }
+  });
+}
+
+importPick.addEventListener('change', () => {
+  const f = importPick.files[0];
+  importPick.value = '';
+  if (f) onImportFile(f);
+});
+
+$('#importBtn').addEventListener('click', () => {
+  if (!Store.fs.ready) { toast('尚未连接文件夹'); return; }
+  importPick.click();
+});
+
+/* ============================================================
+ * 图标初始化
+ * ============================================================ */
+
+$('#searchIcon').innerHTML = I.search;
+$('#newRootBtn').innerHTML = I.plus + '<span>新建根话题</span>';
+$('#hamburger').innerHTML = I.menu;
+$('#attachBtn').innerHTML = I.clip;
+$('#sendBtn').innerHTML = I.send;
+
+syncScopeBtn();
+
+/* ============================================================
+ * 全局快捷键 + document 事件委托
+ * ============================================================ */
+
+// app.js —— 唯一的 Escape handler
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+
+  /* ★ 编辑态优先：焦点在输入框里也要能退出编辑 */
+  if (Store.ui.editingEntry &&
+      !(e.target.closest && e.target.closest('[data-editing]'))) {
+    Store.ui.editingEntry = null;
+    renderEntries();
+    return;
+  }
+  /* ★ 焦点在输入框里 → 交给输入框自己处理 */
+  if (e.target.matches && e.target.matches('input,textarea')) return;
+
+  /* ★ 唯一入口：栈里有什么就关什么 */
+  runTopEsc();
+});
+
+document.addEventListener('click', e => {
+  /* ── 1. 镜像卡头：打开源 ── */
+  const mo = e.target.closest('[data-mirror-open]');
+  if (mo) {
+    const card = mo.closest('.md-mirror');
+    if (card) {
+      const tid = card.dataset.tid;
+      const block = card.dataset.block;
+      const node = findTopicByRefId(tid);
+      if (node) {
+        if (Store.ui.merged) exitMerge();
+        select(node.id);
+        if (block) setTimeout(() => jumpToBlock(node, block), 80);
+      }
+    }
+    return;
+  }
+
+  /* ── 2. 代码块复制 ── */
+  const cp = e.target.closest('.md-pre-copy');
+  if (cp) {
+    const code = cp.closest('.md-pre-wrap').querySelector('code');
+    if (code) {
+      navigator.clipboard.writeText(code.textContent)
+        .then(() => toast('代码已复制'))
+        .catch(() => toast('复制失败'));
+    }
+    return;
+  }
+
+  /* ══════════════════════════════════════════════════════════
+   * ★ 以下两段必须放在 .md-quote.collapsible 之前
+   * ══════════════════════════════════════════════════════════ */
+
+  /* ── 3. 内部引用 → 跨话题跳转 ── */
+  const ref = e.target.closest('.md-ref');
+  if (ref) {
+    const tid   = ref.dataset.topicId;
+    const path  = ref.dataset.path;
+    const stamp = ref.dataset.stamp;
+    const block = ref.dataset.block;
+
+    let node = null;
+    if (tid) {
+      node = findTopicByRefId(tid);
+      if (!node) { toast('引用的话题不存在（或已被彻底删除）'); return; }
+    } else {
+      const segs = (path || '').split(/[\/\u001f]/).map(s => s.trim()).filter(Boolean);
+      node = segs.length ? findByPath(segs.join('\u0001')) : null;
+      if (!node) { toast('引用的话题不存在：' + path); return; }
+    }
+
+    if (Store.ui.merged) exitMerge();
+
+    if (!Store.ui.merged && node.id === Store.ui.selectedId) {
+      const sc = $('#entriesScroll');
+      pushViewState({
+        nodeId: Store.ui.selectedId,
+        scrollTop: sc ? sc.scrollTop : 0,
+      });
+    } else {
+      select(node.id);
+    }
+
+    if (block) setTimeout(() => jumpToBlock(node, block), 80);
+    else if (stamp) setTimeout(() => jumpToStamp(node, stamp), 80);
+    return;
+  }
+
+  /* ── 4. ★新增：关联头 → 跳到被关联的那条 ── */
+  const relHead = e.target.closest('.relevance-head');
+  if (relHead) {
+    const topicRef = relHead.dataset.relevTopic;   // '~tid' 或路径（可能没有）
+    const block    = relHead.dataset.relevBlock;   // bid
+
+    let node = null;
+    if (topicRef && topicRef.startsWith('~')) {
+      node = findTopicByRefId(topicRef.slice(1));
+    } else if (topicRef) {
+      const segs = topicRef.split(/[\/\u001f]/).map(s => s.trim()).filter(Boolean);
+      node = segs.length ? findByPath(segs.join('\u0001')) : null;
+    }
+    /* 没有 topicRef（老格式 / entries-render.js 还没改）→ 兜底当前话题 */
+    if (!node) node = Store.node(Store.ui.selectedId);
+    if (!node) { toast('找不到关联的目标'); return; }
+
+    if (Store.ui.merged) exitMerge();
+    select(node.id);
+    if (block) setTimeout(() => jumpToBlock(node, block), 80);
+    return;
+  }
+
+  /* ══════════════════════════════════════════════════════════
+   * 上面两段都 return 之后，才轮到"引用块展开/收起"兜底
+   * ══════════════════════════════════════════════════════════ */
+
+  /* ── 5. 长引用块展开/收起 ── */
+  const q = e.target.closest('.md-quote.collapsible');
+  if (q) { q.classList.toggle('expanded'); return; }
+
+  /* ── 6. #标签 / 快捷标记 → 左栏搜索 ── */
+  const tg = e.target.closest('.md-tag,.quick-tag');
+  if (tg) {
+    const tag = tg.dataset.tag || (tg.textContent.startsWith('#') ? tg.textContent.slice(1) : '');
+    Store.ui.query = '#' + tag;
+    $('#searchInput').value = Store.ui.query;
+    if (Store.ui.merged) exitMerge();
+    renderTree();
+    return;
+  }
+
+  /* ── 7. 时间流来源标签 → 跳回原话题 ── */
+  const tag = e.target.closest('.src-tag'); if (!tag) return;
+  const eid = tag.closest('[data-eid]').dataset.eid;
+  const nid = tag.dataset.src;
+  exitMerge();
+  select(nid);
+  Store.ui.flashEntry = eid;
+  renderEntries();
+});
+
+
+
+/* ============================================================
+ * 侧栏按钮
+ * ============================================================ */
+
+$('#rescanBtn').addEventListener('click', async () => {
+  if (!Store.fs.ready) { toast('尚未连接文件夹'); return; }
+
+   /* ★ 新增：先问要不要等 pending 写完 */
+   if (Store.fs.pending > 0) {
+    const wait = await confirmDialog(
+      '还有写入未完成',
+      '有 ' + Store.fs.pending + ' 个磁盘写入任务正在排队。\n' +
+      '重新读取磁盘前建议先等它们完成，否则可能读到旧内容。',
+      { okText: '等待完成', cancelText: '直接重扫' }
+    );
+    if (wait) {
+      toast('等待写入完成…');
+      await waitForIdle();
+    }
+  }
+  /* 1. 检查未保存内容，弹确认 */
+  const taBefore = document.querySelector('#inputArea');
+  const draft = (taBefore && taBefore.value.trim()) ? taBefore.value : null;
+  const editing = Store.ui.editingEntry ||
+                  Store.ui.renaming      || Store.ui.creatingParent;
+  /* ★ 新增：草稿跳转 —— 优先于“未保存内容”那条提示 */
+const draftIds = draftTopicIds();
+if (draftIds.length) {
+  const first = findNode(draftIds[0]);
+  const name  = first ? first.title : '（已删除的话题）';
+  const more  = draftIds.length > 1 ? '（另有 ' + (draftIds.length - 1) + ' 个）' : '';
+  const go = await confirmDialog(
+    '有未发送的草稿',
+    '有 ' + draftIds.length + ' 个话题里存在未发送的草稿，最早的一个是「' + name + '」' + more + '。\n' +
+    '是否先跳过去看一眼？',
+    { okText: '去看看', cancelText: '继续重扫' }
+  );
+  if (go) { select(draftIds[0]); return; }
+}
+  if (draft || editing) {
+    const ok = await confirmDialog(
+      '重新读取磁盘',
+      '当前有未保存的输入框草稿或正在编辑的记录，重新读取会丢弃编辑。要继续吗？',
+      { danger: true, okText: '继续' }
+    );
+    if (!ok) return;
+  }
+
+  /* 2. 记下草稿对应的路径 —— rescan 后按路径找回来 */
+  const draftPath = (draft && Store.ui.selectedId)
+    ? (() => {
+        const n = findNode(Store.ui.selectedId);
+        return n ? pOf(n) : null;
+      })()
+    : null;
+
+
+  enqueue(async () => {
+    Store.root.children = await scanChildren(Store.dir);
+    for (const n of Store.nodes()) {
+      if (n.id !== '__root__') clearPendingForNode(n.id);
+    };
+    Store.rebuildIndex();
+    clearURLCache();
+    Store.resetMetaBuilt();
+    /* ★ 重扫后：用新扫出来的顺序重写所有 _顺序.json */
+    try {
+      const cnt = await rewriteAllOrders(Store.root);
+      console.log('[rescan] 已重写 ' + cnt + ' 个顺序文件');
+    } catch (e) {
+      console.warn('[rescan] 重写顺序失败', e);
+    }
+    /* ★ 新增 */
+    Store.ui.viewHistory = [];
+    Store.ui.drafts.clear();
+    Store.ui.viewCursor = -1;
+    history.replaceState({ root: true }, '');
+    /* ★ 新增：重扫后折叠全部 */
+    Store.collapsed.clear();
+    collapseAll();
+
+    /* 3. 清掉一切指向旧对象的编辑态 */
+    Store.ui.editingEntry    = null;
+    Store.ui.creatingParent  = null;
+    Store.ui.renaming        = null;
+
+    const prefs = loadPrefs();
+    const t = prefs.sel ? findByPath(prefs.sel) : null;
+    Store.ui.selectedId = null;
+    renderAll();
+    if (t) select(t.id);
+    else if (Store.root.children[0]) select(Store.root.children[0].id);
+
+    /* 4. 恢复草稿 —— 仅当话题仍是当前选中时 */
+    if (draft && draftPath) {
+      const restored = findByPath(draftPath);
+      if (restored && restored.id === Store.ui.selectedId) {
+        const ta2 = document.querySelector('#inputArea');
+        if (ta2 && !ta2.value) {
+          ta2.value = draft;
+          ta2.dispatchEvent(new Event('input'));   // 触发 autoGrow + refreshPreview
+        }
+      }
+    }
+
+    toast('已从磁盘重新读取');
+  });
+});
+
+/*提醒*/
+$('#folderBtn').addEventListener('click', async () => {
+  /* ── Tauri 分支 ── */
+  if (Storage.isTauri) {
+    let dir;
+    try {
+      dir = await window.__TAURI__.core.invoke('plugin:dialog|open', {
+        options: { directory: true, multiple: false, title: '选择存储文件夹' },
+      });
+    } catch (e) {
+      if (e && e.name !== 'AbortError') toast('无法打开文件夹：' + (e.message || e));
+      return;
+    }
+    if (!dir) return;
+
+    /* 与 Web 版保持一致的确认逻辑（未写入 / 草稿提示） */
+    if (Store.fs.pending > 0) {
+      const ok = await confirmDialog(
+        '还有写入未完成',
+        '当前有 ' + Store.fs.pending + ' 个磁盘写入任务在排队。\n' +
+        '现在切换文件夹会中断它们。',
+        { danger: true, okText: '仍然切换' }
+      );
+      if (!ok) return;
+    }
+    const draftIds = draftTopicIds();
+    if (draftIds.length) {
+      const first = findNode(draftIds[0]);
+      const name = first ? first.title : '（已删除的话题）';
+      const go = await confirmDialog(
+        '有未发送的草稿',
+        '有 ' + draftIds.length + ' 个话题里存在未发送的草稿，最早的一个是「' + name + '」。\n' +
+        '切换文件夹会丢弃这些草稿。要先去处理吗？',
+        { okText: '去看看', cancelText: '仍然切换' }
+      );
+      if (go) { select(draftIds[0]); return; }
+    }
+
+    enqueue(async () => { await connect(dir); });
+    return;
+  }
+  /* ① 同步段：只做无 IO 的事 */
+  const opts = { mode: 'readwrite' };
+  if (Store.dir) opts.startIn = Store.dir;
+
+  /* ② picker 必须是第一个 await */
+  let h;
+  try {
+    h = await window.showDirectoryPicker(opts);
+  } catch (e) {
+    if (e && e.name !== 'AbortError') toast('无法打开文件夹：' + (e.message || e));
+    return;
+  }
+
+  /* ③ 之后再弹确认框 */
+  if (Store.fs.pending > 0) {
+    const ok = await confirmDialog(
+      '还有写入未完成',
+      '当前有 ' + Store.fs.pending + ' 个磁盘写入任务在排队。\n' +
+      '现在切换文件夹会中断它们。',
+      { danger: true, okText: '仍然切换' }
+    );
+    if (!ok) return;
+  }
+  /* ★ 新增：草稿跳转 —— 放在确认框之前，因为切文件夹会丢 drafts */
+  const draftIds = draftTopicIds();
+  if (draftIds.length) {
+    const first = findNode(draftIds[0]);
+    const name  = first ? first.title : '（已删除的话题）';
+    const go = await confirmDialog(
+      '有未发送的草稿',
+      '有 ' + draftIds.length + ' 个话题里存在未发送的草稿，最早的一个是「' + name + '」。\n' +
+      '切换文件夹会丢弃这些草稿。要先去处理吗？',
+      { okText: '去看看', cancelText: '仍然切换' }
+    );
+    if (go) { select(draftIds[0]); return; }
+  }
+
+  enqueue(async () => { await connect(h); });
+});
+
+/* ============================================================
+ * 启动流程
+ * ============================================================ */
+
+
+/*左箭头绑定返回*/
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape' && e.key !== 'ArrowLeft' && e.key !== '[') return;
+  if (e.target.matches && e.target.matches('input,textarea')) return;
+
+  if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); viewBack(); return; }
+  if ((e.metaKey || e.ctrlKey) && e.key === '[') { e.preventDefault(); viewBack(); return; }
+});
+
+
+
+
+
+/* ============================================================
+ * Wire 注入
+ * ============================================================ */
+
+wireEntries({
+  setReply,
+  setRelevance,   // ★
+  renderAll,
+  openPinPage,
+  renderMerged,
+});
+wireTrash({ renderAll });
+wireTree({ renderAll, savePrefs, refreshPreview });
+wireComposer({ renderAll });
+wireMerge({ renderAll });
+wireImage({ jumpToRow });
+wireBoot({ renderAll });
+export { boot };
+/* ============================================================
+ * 启动
+ * ============================================================ */
+

@@ -1,11 +1,35 @@
 {
     "name": "shizhijian",
-    "version": "9.4.5",
+    "version": "10.1.5",
     "description": "时枝笺 · BRANSLIP —— 浏览器里的本地 Markdown 记录本",
     "license": "AGPL-3.0-or-later",
     "private": true,
     "type": "module",
     "scripts": {
         "test": "node --test"
-    }
+    },
+    "main": "index.js",
+    "directories": {
+        "doc": "docs",
+        "test": "tests"
+    },
+    "dependencies": {
+        "commander": "^15.0.0",
+        "katex": "^0.18.7",
+        "marked": "^18.0.14",
+        "marked-katex-extension": "^5.1.13"
+    },
+    "devDependencies": {
+        "@tauri-apps/cli": "^2.12.1"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/okine/branslip.git"
+    },
+    "keywords": [],
+    "author": "",
+    "bugs": {
+        "url": "https://github.com/okine/branslip/issues"
+    },
+    "homepage": "https://github.com/okine/branslip#readme"
 }
