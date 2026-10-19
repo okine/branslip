@@ -129,6 +129,35 @@ export function scrollToBottom(sc, smooth) {
   scrollToY(sc, sc.scrollHeight, smooth);
 }
 
+/* ---------- 分页插入锚点 ----------
+ * 在插入新内容前记下“当前视口顶部第一条记录”的位置，
+ * 插入后按它校正 scrollTop。比 scrollHeight 差值稳：
+ * content-visibility / 图片高度变化会让差值漂移。
+ */
+export function captureScrollAnchor(sc, box) {
+  if (!sc || !box) return null;
+  const scTop = sc.getBoundingClientRect().top;
+  for (const el of box.children) {
+    if (!el.classList.contains('entry-row') &&
+        !el.classList.contains('day-chip')) continue;
+    const r = el.getBoundingClientRect();
+    if (r.bottom > scTop + 2) {
+      return { el, top: r.top - scTop };
+    }
+  }
+  return null;
+}
+
+export function restoreScrollAnchor(sc, anchor) {
+  if (!sc || !anchor || !anchor.el.isConnected) return false;
+  const scTop = sc.getBoundingClientRect().top;
+  const now = anchor.el.getBoundingClientRect().top - scTop;
+  if (Math.abs(now - anchor.top) > 1) {
+    setScrollTopInstant(sc, sc.scrollTop + now - anchor.top);
+  }
+  return true;
+}
+
 /* 目标元素上方若处于 content-visibility 塌陷态，会导致 elTop 严重偏小。
    跳转前把上方一段窗口临时实物化，跳完（或下一帧）恢复。 */
    function materializeAbove(sc, el, windowSize) {

@@ -31,8 +31,10 @@ import {
   escapeEntryBody,
   stampForWrite, entryBlockId, localIdFromMs,
 } from './format.js';
-import { sanitizeName, uniqueName, resolveFile } from './io.js';
+import { sanitizeName, uniqueName, resolveFile, dirOf, writeOrder } from './io.js';
 import { atomicWriteText } from './writeSecurity.js';
+import { Store } from './store.js';
+import { findNode, pathOf } from './tree-utils.js';
 
 /* ============================================================
  * 中间表示（IR）—— adapter 与 runtime 的契约
@@ -659,4 +661,185 @@ export function finalizeFlatTopic(entries, opts) {
   normalizeTimestamps(topic);
   freezeWriteStamps(topic);
   return topic;
+}
+
+/* ============================================================
+ * 导入 UI 流程（原先散在 app.js）
+ * ============================================================ */
+
+export function initImportPicker() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json,.txt,application/json';
+  input.style.display = 'none';
+  document.body.appendChild(input);
+  return input;
+}
+
+async function showImportConfirmDialog(source, count, ui) {
+  return new Promise(resolve => {
+    let photoDir = null;
+    let confirmed = false;
+
+    const sourceName = {
+      deepseek: 'DeepSeek', claude: 'Claude', qwen: '千问', telegram: 'Telegram', qq: 'QQ',
+    }[source] || source;
+
+    const md = ui.openModal(
+      `<h3>确认导入</h3>
+       <p class="sub">检测到 <b>${sourceName}</b> 导出格式。<br>包含 <b>${count}</b> 个话题。</p>
+       <div style="margin:14px 0; padding:12px; background:var(--paper); border-radius:8px;">
+         <p style="font-size:12.5px; margin-bottom:8px; color:var(--ink2);">如果导出包含图片，请选择对应的文件夹以便一并导入：</p>
+         <div style="display:flex; align-items:center; gap:10px;">
+           <button type="button" class="m-btn ghost" id="pickPhotoBtn" style="padding:6px 12px; font-size:12px; flex:none;">选择图片文件夹</button>
+           <span id="photoStatus" style="font-size:12px; color:var(--ink3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">未选择（仅保留文字与路径）</span>
+         </div>
+       </div>
+       <div class="modal-btns">
+         <button class="m-btn ghost" data-close>取消</button>
+         <button class="m-btn" data-ok style="background:var(--accent);color:#F5F1E4">下一步</button>
+       </div>`,
+      () => resolve({ ok: confirmed, photoDir })
+    );
+
+    md.querySelector('#pickPhotoBtn').addEventListener('click', async () => {
+      try {
+        if (Storage.isTauri) {
+          const dir = await window.__TAURI__.core.invoke('plugin:dialog|open', {
+            options: { directory: true, multiple: false, title: '选择图片文件夹' },
+          });
+          if (dir) {
+            photoDir = dir;
+            md.querySelector('#photoStatus').textContent = dir.split(/[\\\/]/).pop() || dir;
+          }
+        } else {
+          const dir = await window.showDirectoryPicker({ mode: 'read' });
+          if (dir) {
+            photoDir = dir;
+            md.querySelector('#photoStatus').textContent = dir.name;
+          }
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') ui.toast('选择文件夹失败：' + (e.message || e));
+      }
+    });
+
+    md.querySelector('[data-close]').addEventListener('click', ui.closeModal);
+    md.querySelector('[data-ok]').addEventListener('click', () => {
+      confirmed = true;
+      ui.closeModal();
+    });
+  });
+}
+
+/**
+ * 导入失败时，把错误详情写到所选父话题目录，方便事后排查。
+ * 文件名以 _ 开头，loader 不会把它当记录/月份文件。
+ */
+export async function writeImportFailureReport(parent, err, meta, deps) {
+  deps = deps || {};
+  const toast = deps.toast || (await import('./ui.js')).toast;
+  const enqueue = deps.enqueue || (await import('./writer.js')).enqueue;
+  const pdir = dirOf(parent);
+  if (!pdir) {
+    toast('导入失败，且目标目录不可用，错误日志未写入');
+    return;
+  }
+  const now = Date.now();
+  const name = '_导入失败-' + localIdFromMs(now) + '.md';
+  const parentPath = pathOf(parent).map(x => x.title).filter(Boolean).join(' / ') || '根目录';
+  const detail = String((err && err.stack) || (err && err.message) || err || '未知错误')
+    .replace(/```/g, "'''");
+  const body = [
+    '# 导入失败 · ' + fmtStamp(now),
+    '',
+    '- 时间：' + fmtStamp(now),
+    '- 来源：' + (meta.source || '未知'),
+    '- 文件：' + (meta.fileName || '未知'),
+    '- 识别到的对话数：' + (meta.count || 0),
+    '- 目标父话题：' + parentPath,
+    '',
+    '## 错误详情',
+    '',
+    '```text',
+    detail,
+    '```',
+    '',
+  ].join('\n');
+
+  const r = await enqueue(() => atomicWriteText(pdir, name, body));
+  if (r.ok) toast('已把错误详情写入：' + name);
+  else toast('错误详情写入失败：' + ((r.err && r.err.message) || r.err));
+}
+
+/**
+ * 核心导入流程。
+ * @param {File} file
+ * @param {{attempts: Array, renderAll: Function, select: Function}} deps
+ */
+export async function runImportFile(file, deps) {
+  deps = deps || {};
+  const attempts = deps.attempts || [];
+  const renderAll = deps.renderAll || (() => {});
+  const select = deps.select || (() => {});
+  const ui = await import('./ui.js');
+  const { enqueue } = await import('./writer.js');
+  const text = await file.text();
+
+  let conversations = null, source = '', importFn = null;
+  const _warn = console.warn;
+  console.warn = () => {};
+  for (const [src, parseFn, imp] of attempts) {
+    try {
+      conversations = parseFn(text);
+      source = src;
+      importFn = imp;
+      break;
+    } catch (e) {}
+  }
+  console.warn = _warn;
+
+  if (!conversations) {
+    ui.toast('无法识别的文件格式');
+    return;
+  }
+
+  const { ok, photoDir } = await showImportConfirmDialog(source, conversations.length, ui);
+  if (!ok) return;
+
+  const hint = conversations.length === 1
+    ? '把「' + conversations[0].title + '」导入到哪个话题下？'
+    : '把 ' + conversations.length + ' 个对话导入到哪个话题下？';
+
+  ui.openMovePicker(hint, [], async (parentId) => {
+    const parent = findNode(parentId);
+    if (!parent) { ui.toast('找不到目标话题'); return; }
+    try {
+      const nodes = [];
+      const r = await enqueue(async (report) => {
+        const created = await importFn(dirOf(parent), conversations, report, { photoDir });
+        for (const n of created) { parent.children.push(n); nodes.push(n); }
+        Store.rebuildIndex();
+        Store.resetMetaBuilt();
+        await writeOrder(parent);
+      });
+      if (!r.ok) throw (r.err || new Error('磁盘写入失败'));
+      if (!nodes.length) throw new Error('导入任务完成，但没有任何话题被写入（详见控制台）');
+
+      renderAll();
+      if (nodes[0]) select(nodes[0].id);
+      ui.toast('已导入 ' + nodes.length + ' 个话题，共 ' +
+        nodes.reduce((s, n) => s + n.entries.length, 0) + ' 条记录');
+      console.log('[import] 识别为', source, '，解析出', conversations.length, '个对话');
+    } catch (e) {
+      console.error('[import]', e);
+      renderAll();
+      ui.toast('导入失败：' + ((e && e.message) || e));
+      await writeImportFailureReport(parent, e, {
+        source,
+        fileName: file.name,
+        count: conversations.length,
+      }, { toast: ui.toast, enqueue });
+    }
+  });
 }

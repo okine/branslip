@@ -172,6 +172,8 @@ export function openCalendarPicker(opts) {
       const t = parseDayKey(todayKey);
       viewY = t.y; viewM = t.m; selectedKey = todayKey;
       draw(); position();
+      if (opts.onPick) opts.onPick(todayKey);
+      close();
       return;
     }
     const dayBtn = ev.target.closest('[data-day]');
@@ -193,6 +195,8 @@ export function openCalendarPicker(opts) {
       const p = parseDayKey(k);
       viewY = p.y; viewM = p.m;
       draw(); position();
+      if (opts.onPick) opts.onPick(k);
+      close();
       return;
     }
     

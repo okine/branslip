@@ -13,8 +13,7 @@
 import { esc } from './utils.js';
 import { fmtStamp } from './format.js';
 import { Mutate } from './mutate.js';
-import { findTopicByRefId } from './md.js';
-import { findByPath } from './tree-utils.js';
+import { findTopicByRefId, findByPath } from './tree-utils.js';
 
 let previewTimer = null;
 let previewCard = null;

@@ -3,14 +3,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { Store } from '../store.js';
+import { Mutate } from '../mutate.js';
 
 const mk = (id, title, children = [], entries = []) => ({
   id, title, _name: title, _dir: null,
   children, entries, pinned: [], folds: [],
 });
 
-test('rebuildIndex 建立节点/父子/记录索引', () => {
-  Store.root.children = [
+test('rebuildIndex 建立节点/父子/记录索引', () => {  Store.root.children = [
     mk('A', 'A', [mk('A1', 'A1')], [
       { id: 'e1', text: 'x', createdAt: 1 },
     ]),
@@ -22,6 +22,22 @@ test('rebuildIndex 建立节点/父子/记录索引', () => {
   assert.equal(Store.parent('A1').id, 'A');
   assert.equal(Store.entry('e1').node.id, 'A');
   assert.equal(Store.entry('e1').e.id, 'e1');
+});
+
+test('blockEntry / entry 索引：写盘时间戳冻结后仍能反查', () => {
+  const e = {
+    id: 'b1', text: 'x', createdAt: 1,
+    _writeStamp: '2026-09-17 09:05:03.007+08:00',
+  };
+  Store.root.children = [mk('B', 'B', [], [e])];
+  Store.rebuildIndex();
+
+  const bid = Mutate.entryBlockId(e);
+  assert.equal(Store.blockEntry(bid).e.id, 'b1');
+  assert.equal(Store.blockEntry('不存在'), null);
+
+  Store.removeEntry(Store.node('B'), 'b1');
+  assert.equal(Store.blockEntry(bid), null);
 });
 
 test('node/parent/entry 对未知 id 返回 null', () => {
@@ -70,6 +86,19 @@ test('indexEntry / removeEntry 配对维护 entryIndex', () => {
 
   Store.removeEntry(n, 'z');
   assert.equal(Store.entry('z'), null);
+});
+
+test('scrollMemo 只保留最近 10 个话题（LRU）', () => {
+  Store.scrollMemo.clear();
+  for (let i = 1; i <= 11; i++) Store.setScrollMemo('t' + i, i * 100);
+  assert.equal(Store.scrollMemo.size, 10);
+  assert.equal(Store.getScrollMemo('t1'), null);
+  assert.equal(Store.getScrollMemo('t11'), 1100);
+  /* 命中会刷新 LRU：t2 被提到队尾，再塞一个应淘汰 t3 */
+  Store.getScrollMemo('t2');
+  Store.setScrollMemo('t12', 1200);
+  assert.equal(Store.getScrollMemo('t3'), null);
+  assert.equal(Store.getScrollMemo('t2'), 200);
 });
 
 test('rebuildIndex 是幂等的', () => {

@@ -12,7 +12,7 @@
  * 依赖：utils / format / md / tree-utils / io / writer / ui / image
  */
 
-import { esc, badgeHTML, countLabel } from './utils.js';
+import { esc, badgeHTML } from './utils.js';
 import { fmtStamp, parseStamp } from './format.js';
 import { IMG_RE } from './md.js';
 import { pathOf } from './tree-utils.js';
@@ -67,9 +67,9 @@ function renderDetails(node, images) {
       '</div>' +
     '</div>' +
     '<div class="topic-stats">' +
-      statHTML('记录', countLabel(node.entries.length)) +
-      statHTML('图片', countLabel(images.length)) +
-      statHTML('子话题', countLabel(node.children.length)) +
+      statHTML('记录', node.entries.length) +
+      statHTML('图片', images.length) +
+      statHTML('子话题', node.children.length) +
     '</div>' +
     '<div class="topic-card">' +
       '<div class="topic-card-head">' +
@@ -82,7 +82,7 @@ function renderDetails(node, images) {
       '<div class="topic-hint">简介保存在话题目录的 _话题.json 里</div>' +
     '</div>' +
     (images.length
-      ? '<div class="topic-media-head">图片 · ' + countLabel(images.length) + '</div>' +
+      ? '<div class="topic-media-head">图片 · ' + images.length + '</div>' +
         '<div class="topic-media">' + thumbs + '</div>'
       : '<div class="topic-empty">这个话题还没有图片</div>');
 }

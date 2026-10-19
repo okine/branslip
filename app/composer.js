@@ -17,7 +17,7 @@ import { $, esc, uid } from './utils.js';
 import { I } from './icons.js';
 import { Store } from './store.js';
 import { Mutate } from './mutate.js';
-import { imgStamp,stampForWrite } from './format.js';
+import { imgStamp,stampForWrite, nextCreatedAtMs, CLOCK_DRIFT_THRESHOLD } from './format.js';
 import { buildRef, stripQuoteHeader } from './md.js';
 import { appendMonthEntry } from './io.js';
 import {
@@ -29,8 +29,6 @@ import { enqueue } from './writer.js';
 import { toast } from './ui.js';
 import { findNode } from './tree-utils.js';
 import { appendEntry, updateTopCount } from './entries.js';
-import { nextCreatedAtMs, CLOCK_DRIFT_THRESHOLD } from './composer-time.js';
-
 
 /* ---------- 依赖注入 ---------- */
 let D = { renderAll: () => {} };
@@ -231,8 +229,11 @@ function send() {
   try {
     const text = buildEntryText(v, n, replyTo, relevanceTo);
     const e = Store.addEntry(n, { id: uid(), text, createdAt: nextCreatedAt(n) });
+    const addBid = Mutate.entryBlockId(e);
     e._tzOffset = -new Date().getTimezoneOffset();  // 显式记下写时区
+    const tzBid = Mutate.entryBlockId(e);
     e._writeStamp = stampForWrite(e);               // 冻结，与 format.stampForWrite 一致
+    Store.reindexEntry(e, n, [addBid, tzBid]);       // blockId 可能因时区/_writeStamp 变化
     
     setRelevance(null);
     setReply(null);
@@ -270,6 +271,16 @@ ta.addEventListener('keydown', e => {
   }
 });
 $('#sendBtn').addEventListener('click', send);
+
+/* 话题切换时由 tree.js 调用：把该话题的草稿放回输入框 */
+export function restoreDraft(nodeId) {
+  if (!ta || !nodeId) return false;
+  const draft = Store.ui.drafts.get(nodeId) || '';
+  if (ta.value === draft) return false;
+  ta.value = draft;
+  ta.dispatchEvent(new Event('input'));   // autoGrow + refreshPreview + 草稿回写
+  return true;
+}
 
 /* ============================================================
  * 图片预览条

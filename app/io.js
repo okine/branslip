@@ -20,7 +20,7 @@ import {
   fmtStamp, monthKey, monthFileName, MONTH_RE, parseStamp,escapeEntryBody,
   stampForWrite,
 } from './format.js';
-import { nextCreatedAtMs } from './composer-time.js';
+import { nextCreatedAtMs } from './format.js';
 
 /* ---------- 文件名常量 ---------- */
 export const ENTRY_FILE = '_记录.md';

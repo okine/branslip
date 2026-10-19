@@ -24,8 +24,13 @@ import { dayKey, fmtStamp } from './format.js';
 import { ensureGlobalMeta } from './meta-row.js';
 import { entryBlockHTML } from './entries-render.js';
 import { hydrateImages } from './image.js';
-import { scrollIntoViewIn, flashEl } from './scroll-utils.js';
+import {
+  scrollIntoViewIn, scrollToBottom, flashEl,
+  captureScrollAnchor, restoreScrollAnchor,
+} from './scroll-utils.js';
 import { toast } from './ui.js';
+import { updateTopicMeta } from './io.js';
+import { enqueue } from './writer.js';
 
 /* ---------- 依赖注入 ---------- */
 let D = { renderEntries: () => {} };
@@ -35,9 +40,153 @@ export function wireEntriesJump(h) { Object.assign(D, h); }
 const CHUNK_SIZE = 40;
 const IDLE_LOAD_COOLDOWN = 500;
 
+/* “目标前后 10 条”直接定位窗口是否开启 */
+let directWindow = false;
+export function setDirectWindow(v) { directWindow = !!v; }
+export function isDirectWindow() { return directWindow; }
+
 let loadingEarlier = false;
+let loadingLater = false;
 let lastIdleLoadAt = 0;
 let earlierIO = null;
+let laterIO = null;
+
+/* ---------- 滚动位置记忆 / 持久化 ---------- */
+const SCROLL_SAVE_MS = 2500;
+let scrollSaveTimer = null;
+const scrollDirty = new Set();
+
+export function rememberScroll(nodeId, top) {
+  if (!nodeId || !Number.isFinite(top)) return;
+  Store.setScrollMemo(nodeId, top);
+  const node = Store.node(nodeId);
+  if (node && node.scroll && node.scroll.top === top) scrollDirty.delete(nodeId);
+  else scrollDirty.add(nodeId);
+
+  if (scrollSaveTimer) clearTimeout(scrollSaveTimer);
+  scrollSaveTimer = setTimeout(() => {
+    scrollSaveTimer = null;
+    flushScroll(Store.ui.selectedId);
+  }, SCROLL_SAVE_MS);
+  if (scrollSaveTimer && typeof scrollSaveTimer.unref === 'function') scrollSaveTimer.unref();
+}
+
+export function recallScroll(nodeId, node) {
+  const mem = Store.getScrollMemo(nodeId);
+  if (mem != null) return mem;
+  if (node && node.scroll && Number.isFinite(node.scroll.top)) {
+    Store.setScrollMemo(nodeId, node.scroll.top);
+    return node.scroll.top;
+  }
+  return null;
+}
+
+export function flushScroll(nodeId) {
+  const id = nodeId || Store.ui.selectedId;
+  if (!id || !scrollDirty.has(id)) return;
+  const node = Store.node(id);
+  if (!node || !node._dir) { scrollDirty.delete(id); return; }
+
+  const top = Store.getScrollMemo(id);
+  if (top == null) { scrollDirty.delete(id); return; }
+  if (node.scroll && node.scroll.top === top) { scrollDirty.delete(id); return; }
+
+  scrollDirty.delete(id);
+  enqueue(() => updateTopicMeta(node, { scroll: { top } })).then(r => {
+    if (r.ok) node.scroll = { top };
+    else scrollDirty.add(id);   // 下次切换/隐藏时再试
+  });
+}
+
+export function flushCurrentScroll() {
+  const id = Store.ui.selectedId;
+  const s = $('#entriesScroll');
+  if (!id || !s) return;
+  Store.setScrollMemo(id, s.scrollTop);
+  scrollDirty.add(id);
+  flushScroll(id);
+}
+
+export function clearScrollState() {
+  if (scrollSaveTimer) { clearTimeout(scrollSaveTimer); scrollSaveTimer = null; }
+  scrollDirty.clear();
+  Store.scrollMemo.clear();
+}
+
+/* ---------- 列表顶部 / 底部对齐 ---------- */
+
+/**
+ * 找当前"跨过视口顶部"的第一个可见块。
+ * 返回 { el, cut } —— cut=true 表示它被切了（顶部在视口之上）。
+ */
+export function topCutItem() {
+  const sc = $('#entriesScroll'), box = $('#entries');
+  if (!sc || !box) return null;
+  const viewTop = sc.getBoundingClientRect().top;
+  for (const el of box.children) {
+    if (!el.classList.contains('entry-row') &&
+        !el.classList.contains('day-chip')) continue;
+    const r = el.getBoundingClientRect();
+    if (r.bottom > viewTop + 2) {
+      return { el, cut: r.top < viewTop - 2 };
+    }
+  }
+  return null;
+}
+
+export function scrollToCurrentTop() {
+  const sc = $('#entriesScroll'), box = $('#entries');
+  const t = topCutItem();
+  if (!sc || !box || !t) return;
+  const padTop = parseFloat(getComputedStyle(box).paddingTop) || 0;
+  scrollIntoViewIn(sc, t.el, { align: 'top', offset: padTop });
+}
+
+export function scrollToLatest() {
+  if (directWindow) {
+    /* 直接定位窗口里点向下箭头：回最新一页，不逐批加载中间所有记录 */
+    D.renderEntries();
+    scrollToBottom($('#entriesScroll'), true);
+    return;
+  }
+  scrollToBottom($('#entriesScroll'), true);
+}
+
+export function updateScrollBtn() {
+  const s = $('#entriesScroll');
+  if (!s) return;
+
+  const dist = s.scrollHeight - s.scrollTop - s.clientHeight;
+
+  /* 到底按钮：离底部 > 200px 显示；定位窗口里即使内容不够高，
+     也要留下"向下箭头 → 回最新"的入口 */
+  const bottomBtn = $('#scrollBottomBtn');
+  const hasLater = !!document.getElementById('loadLater');
+  if (bottomBtn) bottomBtn.classList.toggle('on', dist > 200 || hasLater);
+
+  /* 到顶按钮：顶部那条被切断才显示 */
+  const topBtn = $('#scrollTopBtn');
+  if (topBtn) {
+    if (s.scrollTop < 100) { topBtn.classList.remove('on'); return; }
+    const t = topCutItem();
+    topBtn.classList.toggle('on', !!(t && t.cut));
+  }
+}
+
+if (typeof document !== 'undefined') {
+  $('#scrollBottomBtn').addEventListener('click', scrollToLatest);
+  $('#scrollTopBtn').addEventListener('click', scrollToCurrentTop);
+}
+
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', flushCurrentScroll);
+}
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) flushCurrentScroll();
+  });
+}
 
 const entryStamp = e => fmtStamp(e.createdAt);
 
@@ -75,6 +224,7 @@ export function loadEarlier(n) {
 
     const oldH = sc.scrollHeight;
     const oldTop = sc.scrollTop;
+    const anchor = captureScrollAnchor(sc, box);
     ensureGlobalMeta();
 
     let h = '';
@@ -94,8 +244,10 @@ export function loadEarlier(n) {
     if (start === 0) sentinel.remove();
     else sentinel.textContent = '向上滚动加载更早的记录 · 还有 ' + start + ' 条';
 
-    const newH = sc.scrollHeight;
-    sc.scrollTo({ top: oldTop + (newH - oldH), behavior: 'auto' });
+    if (!restoreScrollAnchor(sc, anchor)) {
+      const newH = sc.scrollHeight;
+      sc.scrollTo({ top: oldTop + (newH - oldH), behavior: 'auto' });
+    }
     hydrateImages(box);
   } finally {
     loadingEarlier = false;
@@ -104,6 +256,54 @@ export function loadEarlier(n) {
 
 export function clearEarlierObs() {
   if (earlierIO) { earlierIO.disconnect(); earlierIO = null; }
+}
+
+/* ---------- 向下加载（直接定位窗口用） ---------- */
+
+export function loadLater(n) {
+  if (!n || loadingLater) return;
+  if (currentViewNodeId() !== n.id) return;
+
+  loadingLater = true;
+  try {
+    const box = $('#entries');
+    const sc = $('#entriesScroll');
+    const sentinel = $('#loadLater');
+    if (!sentinel) return;
+
+    const start = Store.ui.loadedEnd;
+    const total = n.entries.length;
+    if (start >= total) { sentinel.remove(); return; }
+
+    const end = Math.min(total, start + CHUNK_SIZE);
+    const anchor = captureScrollAnchor(sc, box);
+    ensureGlobalMeta();
+
+    let h = '';
+    let lastDay = start > 0 ? dayKey(n.entries[start - 1].createdAt) : '';
+    let idx = 0;
+    for (let i = start; i < end; i++) {
+      const e = n.entries[i];
+      const dk = dayKey(e.createdAt);
+      const showDay = dk !== lastDay;
+      if (showDay) lastDay = dk;
+      h += entryBlockHTML(e, idx, n, showDay);
+      idx++;
+    }
+
+    sentinel.insertAdjacentHTML('beforebegin', h);
+    Store.ui.loadedEnd = end;
+    if (end === total) sentinel.remove();
+    else sentinel.textContent = '向下滚动加载更新的记录 · 还有 ' + (total - end) + ' 条';
+    restoreScrollAnchor(sc, anchor);
+    hydrateImages(box);
+  } finally {
+    loadingLater = false;
+  }
+}
+
+export function clearLaterObs() {
+  if (laterIO) { laterIO.disconnect(); laterIO = null; }
 }
 
 /* 哨兵观察器 —— 每次加载后都要重新挂 */
@@ -118,6 +318,19 @@ export function armLoadEarlier(node) {
     if (document.getElementById('loadEarlier')) armLoadEarlier(node);
   }, { root: document.getElementById('entriesScroll'), rootMargin: '200px 0px' });
   earlierIO.observe(sentinel);
+}
+
+export function armLoadLater(node) {
+  clearLaterObs();
+  const sentinel = document.getElementById('loadLater');
+  if (!sentinel || !node) return;
+  laterIO = new IntersectionObserver(ents => {
+    if (!ents[0].isIntersecting) return;
+    clearLaterObs();
+    loadLater(node);
+    if (document.getElementById('loadLater')) armLoadLater(node);
+  }, { root: document.getElementById('entriesScroll'), rootMargin: '200px 0px' });
+  laterIO.observe(sentinel);
 }
 
 /**
@@ -163,20 +376,19 @@ export function jumpToRow(node, targetId) {
       return;
     }
 
-    /* 2. 单话题视图 + 有更早分页 → 加载后重试。
-       ★ 必须 !merged：合并视图下 currentViewNodeId() 返回 null，
-          loadEarlier 会因身份不符直接 return，
-          tries 下一帧再进同一分支 → 无限 rAF。 */
+    /* 2. 目标在内存里但没渲染 → 直接切到"目标前后各 10 条"窗口，
+       不再一截一截 loadEarlier（老记录会触发无限向上加载）。 */
+    const hit = Store.entry(targetId);
+    const inNode = !!(hit && hit.node === node);
     if (!Store.ui.merged
-        && document.getElementById('loadEarlier')
-        && currentViewNodeId() === node.id) {
-      loadEarlier(node);
-      requestAnimationFrame(tries);
+        && inNode
+        && currentViewNodeId() === node.id
+        && typeof D.showAround === 'function') {
+      D.showAround(node, targetId);
       return;
     }
 
     /* 3. 目标在折叠区间里 → 展开后重试 */
-    const hit = Store.entry(targetId);
     if (hit && hit.node === node) {
       const idx = node.entries.indexOf(hit.e);
       for (const f of (node.folds || [])) {
@@ -196,9 +408,7 @@ export function jumpToRow(node, targetId) {
     }
 
     /* 4. 都试过了，确实找不到 */
-    toast(Store.ui.merged
-      ? '找不到那条记录（可能在更早的时间流里，滚到顶部加载后再试）'
-      : '找不到那条记录（可能在更早的月份，未被加载或已折叠）');
+    toast('找不到那条记录');
   };
 
   requestAnimationFrame(tries);
@@ -206,19 +416,12 @@ export function jumpToRow(node, targetId) {
 
 export function jumpToBlock(node, blockId) {
   const tries = () => {
+    const hit = Store.blockEntry(blockId);
+    if (hit && hit.node === node) { jumpToRow(node, hit.e.id); return; }
+    /* 兼容旧数据/未建 block 索引的调用 */
     const i = Mutate.findEntryIndexByBlockId(node, blockId);
     if (i >= 0) { jumpToRow(node, node.entries[i].id); return; }
-
-    if (!Store.ui.merged
-        && document.getElementById('loadEarlier')
-        && currentViewNodeId() === node.id) {
-      loadEarlier(node);
-      requestAnimationFrame(tries);
-      return;
-    }
-    toast(Store.ui.merged
-      ? '找不到那条记录（可能在更早的时间流里，滚到顶部加载后再试）'
-      : '找不到那条记录');
+    toast('找不到那条记录');
   };
   requestAnimationFrame(tries);
 }
@@ -227,18 +430,8 @@ export function jumpToStamp(node, stamp) {
   const tries = () => {
     const t = node.entries.find(e => entryStamp(e) === stamp);
     if (t) { jumpToRow(node, t.id); return; }
-
-    /* 合并视图补上身份检查。 */
-    if (!Store.ui.merged
-        && document.getElementById('loadEarlier')
-        && currentViewNodeId() === node.id) {
-      loadEarlier(node);
-      requestAnimationFrame(tries);
-      return;
-    }
-    toast(Store.ui.merged
-      ? '找不到那条记录（可能在更早的时间流里，滚到顶部加载后再试）'
-      : '找不到那条记录（可能已被删除）');
+    /* 同上：内存里找不到，加载 DOM 分页也不会变出这条记录 */
+    toast('找不到那条记录（可能已被删除）');
   };
   requestAnimationFrame(tries);
 }

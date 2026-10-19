@@ -268,6 +268,20 @@ function parseStamp(s) {
   return parseStampToMs(m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8]);
 }
 
+/* ============================================================
+ * 记录时间戳计算（原 composer-time.js）
+ * ============================================================ */
+
+const CLOCK_DRIFT_WARN_MS = 30 * 1000;
+
+export function nextCreatedAtMs(entries, now) {
+  const last = entries[entries.length - 1];
+  if (!last || now > last.createdAt) return { ms: now, drift: 0 };
+  return { ms: last.createdAt + 1, drift: last.createdAt - now };
+}
+
+export const CLOCK_DRIFT_THRESHOLD = CLOCK_DRIFT_WARN_MS;
+
 export {
   fmtStampLocal,
   fmtStamp,

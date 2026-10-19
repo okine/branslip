@@ -21,7 +21,8 @@
  *   - 需要 renderAll（在 app.js）       → 通过 wireTree 注入
  *   - 需要 savePrefs（在 app.js）       → 通过 wireTree 注入
  *   - 需要 refreshPreview（在 app.js）  → 通过 wireTree 注入
- *   - renderEntries / updateScrollBtn 从 entries.js 直接 import
+ *   - renderEntries 从 entries.js 直接 import
+ *   - updateScrollBtn 从 entries-jump.js 直接 import
  *   - addNode / renameNode 通过 bindTreeRender 注入给 tree-render.js
  */
 
@@ -40,8 +41,10 @@ import {
 import {
   findNode, findParent,  pOf, isDesc, subtreeIds,
 } from './tree-utils.js';
-import { renderEntries, updateScrollBtn } from './entries.js';
-import { setReply, setRelevance } from './composer.js';
+import { renderEntries } from './entries.js';
+import { updateScrollBtn } from './entries-jump.js';
+import { setReply, setRelevance, restoreDraft } from './composer.js';
+import { recallScroll, flushScroll, rememberScroll } from './entries-jump.js';
 
 import * as treeRender from './tree-render.js';
 import {
@@ -111,9 +114,11 @@ export function select(id, opts) {
     Store.ui.lastMultiClick = null;
     const bar = $('#multiBar');
     if (bar) bar.classList.remove('on'); }
-  if (!wasMerged && Store.ui.selectedId && Store.ui.selectedId !== id) {
+  if (!wasMerged && prevId && prevId !== id) {
      const s = $('#entriesScroll');
-  if (s) Store.scrollMemo.set(Store.ui.selectedId, s.scrollTop); }
+     if (s) rememberScroll(prevId, s.scrollTop);
+     flushScroll(prevId);
+  }
   if (Store.ui.selectedId !== id) { 
     Store.ui.multiSelect.clear();
     Store.ui.lastMultiClick = null;
@@ -122,7 +127,6 @@ export function select(id, opts) {
 
   Store.ui.selectedId = id;
    /* ★ 切走前：把当前话题的草稿存起来 */
-  const ta = $('#inputArea');
   Store.ui.editingEntry = null;
   Store.ui.pinCursor = null;
   setReply(null);
@@ -138,14 +142,8 @@ export function select(id, opts) {
   let p = findParent(id);
   while (p && p.id !== '__root__') { Store.collapsed.delete(pOf(p)); p = findParent(p.id); }
 
-    /* ★ 切来后：把新话题的草稿还原到 textarea */
-  if (ta) {
-    const draft = Store.ui.drafts.get(id) || '';
-    if (ta.value !== draft) {
-      ta.value = draft;
-      ta.dispatchEvent(new Event('input'));  // 触发 autoGrow + refreshPreview
-    }
-  }
+   /* ★ 切来后：把新话题的草稿还原到 textarea */
+  restoreDraft(id);
   /* 两个话题的输入框内容恰好相同（例如都是空）时不会触发 input，
      这里补一次，保证图片预览条不会残留上一个话题的附件。 */
   D.refreshPreview();
@@ -156,7 +154,7 @@ export function select(id, opts) {
      返回时 popstate 恢复到上一条 viewHistory，即"上一个话题"。 */
   if (!opts.skipHistory) {
     const sc = $('#entriesScroll');
-    const saved = Store.scrollMemo.get(id);
+    const saved = recallScroll(id, Store.node(id));
     pushViewState({
       nodeId: id,
       scrollTop: (saved != null) ? saved : (sc ? sc.scrollHeight : 0),
@@ -165,7 +163,7 @@ export function select(id, opts) {
   if (opts.noScrollRestore) return;
   requestAnimationFrame(() => {
     const s = $('#entriesScroll'); if (!s) return;
-    const saved = wasMerged ? null : Store.scrollMemo.get(id);
+    const saved = wasMerged ? null : recallScroll(id, Store.node(id));
     const target = saved != null ? saved : s.scrollHeight;
     s.scrollTo({ top: target, behavior: 'instant' });
     requestAnimationFrame(() => {
@@ -549,7 +547,7 @@ export function goToView(idx) {
   requestAnimationFrame(() => {
     const sc = document.querySelector('#entriesScroll');
     if (!sc) return;
-    const memo = Store.scrollMemo.get(nid);
+    const memo = recallScroll(nid, Store.node(nid));
     sc.scrollTop = (memo != null) ? memo : (s.scrollTop || 0);
   });
   updateBackBtn();

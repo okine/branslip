@@ -30,8 +30,12 @@ import {
 } from './io.js';
 import { enqueue } from './writer.js';
 import { pathOf } from './tree-utils.js';
+import { scrollIntoViewIn, flashEl } from './scroll-utils.js';
+import { openTopicLightbox } from './image.js';
+import { jumpToRow } from './entries-jump.js';
 import { toast, openMovePicker, confirmDialog,pushEsc, promptInput } from './ui.js';
-import { diffGlobalMetaFor, removeGlobalMetaFor, addGlobalMetaFor,refreshAllRowMeta } from './meta-row.js';
+import { diffGlobalMetaFor, removeGlobalMetaFor, addGlobalMetaFor,refreshAllRowMeta,
+  scanEntryRefs } from './meta-row.js';
 
 /* ---------- 依赖注入 ---------- */
 let D = {
@@ -43,6 +47,7 @@ let D = {
   setMetaCounts:  () => {},   // ★
   renderPins:     () => {},
   toggleEntryPin: () => {},
+  select:         () => {},
   setReply:       () => {},
   setRelevance:   () => {},
   renderAll:      () => {},
@@ -275,20 +280,35 @@ export function commitEdit(eid, val, nid) {
   const hit = findEntry(eid);
   const n = hit ? hit.node : findNode(nid || Store.ui.selectedId);
   if (!n) { Store.ui.editingEntry = null; D.renderEntries(); return; }
-  if (!v) { Store.ui.editingEntry = null; D.renderEntries(); return; }
+  if (!v) {
+    Store.ui.editingEntry = null;
+    if (!D.replaceRow(eid, n)) D.renderEntries();
+    return;
+  }
 
   /* ★ 变更 + 全部副作用（缓存失效 / 差量计数 / 持久化）一次做完 */
   const r = changeEntryText(n, eid, () => Mutate.editEntry(n, eid, v));
   const ent = r && r.entry;
 
   Store.ui.editingEntry = null;
-  if (!ent || Store.ui.merged) { D.renderEntries(); return; }
+  if (!ent) { D.renderEntries(); return; }
 
-  /* UI 层：镜像走整块重绘，否则只替换这一行 */
+  /* UI 层：只替换编辑行；镜像行也单独替换，避免整页重绘把
+     更早加载出来的记录和滚动位置一起丢掉。 */
+  if (!D.replaceRow(eid, n)) { D.renderEntries(); return; }
+
   const bid = Mutate.entryBlockId(ent);
-  const mirrorCount = Store.mirrorCounts.get(bid)?.size || 0;
-  if (mirrorCount > 0) D.renderEntries();
-  else if (!D.replaceRow(eid, n)) D.renderEntries();
+  const box = $('#entries');
+  if (box) {
+    for (const row of box.querySelectorAll('.entry-row[data-eid]')) {
+      if (row.dataset.eid === eid) continue;
+      const hit = Store.entry(row.dataset.eid);
+      if (!hit) continue;
+      if (scanEntryRefs(hit.e.text).mirror.includes(bid)) {
+        D.replaceRow(hit.e.id, hit.node);
+      }
+    }
+  }
 
   if (r.changed) refreshAllRowMeta();
   D.renderPins();
@@ -567,4 +587,124 @@ export function buildEntryMenuItems(hit, opts) {
   return MENU_ORDER
     .map(name => MENU_ITEMS[name] ? MENU_ITEMS[name](ctx) : null)
     .filter(x => x != null);
+}
+
+/* #entries 的点击路由：徽章跳转 / 折叠 / 多选 / 图片灯箱 / 工具按钮 */
+export function handleEntriesClick(e) {
+  if (Store.ui.multiSelect.size) {
+    const mrow = e.target.closest('.entry-row');
+    const isMultiClick = mrow
+      && (e.ctrlKey || e.metaKey || e.shiftKey)
+      && !e.target.closest('[data-eact]')
+      && !e.target.closest('.md-ref')
+      && !e.target.closest('.md-tag')
+      && !e.target.closest('img.eimg');
+    if (!isMultiClick) clearMultiSelect();
+  }
+
+  const badge = e.target.closest('.reply-badge');
+  if (badge) {
+    const sc = $('#entriesScroll');
+    const target = document.querySelector('#entries .entry-row[data-eid="' + badge.dataset.replyTo + '"]');
+    if (target) {
+      scrollIntoViewIn(sc, target, { align: 'center' });
+      flashEl(target);
+    } else {
+      const cur = findNode(Store.ui.selectedId);
+      if (cur) jumpToRow(cur, badge.dataset.replyTo);
+    }
+    return;
+  }
+
+  const relBadge = e.target.closest('.relevance-badge');
+  if (relBadge) {
+    const sc = $('#entriesScroll');
+    const target = document.querySelector('#entries .entry-row[data-eid="' + relBadge.dataset.relevTo + '"]');
+    if (target) {
+      scrollIntoViewIn(sc, target, { align: 'center' });
+      flashEl(target);
+    } else {
+      const cur = findNode(Store.ui.selectedId);
+      if (cur) jumpToRow(cur, relBadge.dataset.relevTo);
+    }
+    return;
+  }
+
+  const mirrorBadge = e.target.closest('.mirror-badge');
+  if (mirrorBadge) {
+    const targetId = mirrorBadge.dataset.mirrorOf;
+    const sc = $('#entriesScroll');
+    const target = document.querySelector('#entries .entry-row[data-eid="' + targetId + '"]');
+    if (target) {
+      scrollIntoViewIn(sc, target, { align: 'center' });
+      flashEl(target);
+      return;
+    }
+
+    const hit = findEntry(targetId);
+    if (!hit) { toast('找不到那条记录'); return; }
+    if (hit.node.id !== Store.ui.selectedId) {
+      Store.ui.flashEntry = targetId;
+      D.select(hit.node.id, { noScrollRestore: true });
+    } else {
+      jumpToRow(hit.node, targetId);
+    }
+    return;
+  }
+
+  const tog = e.target.closest('.fold-toggle');
+  if (tog) {
+    const key = tog.dataset.fold;
+    if (Store.ui.expandedFolds.has(key)) Store.ui.expandedFolds.delete(key);
+    else Store.ui.expandedFolds.add(key);
+    D.renderEntries();
+    return;
+  }
+
+  const cxl = e.target.closest('.fold-cancel');
+  if (cxl) {
+    const key = cxl.dataset.fold;
+    const [from, to] = key.split('|').map(Number);
+    const n0 = findNode(Store.ui.selectedId);
+    if (n0) {
+      Mutate.removeFold(n0, from, to);
+      enqueue(() => writeFolds(n0));
+      Store.ui.expandedFolds.delete(key);
+      D.renderEntries();
+      toast('已取消折叠');
+    }
+    return;
+  }
+
+  const row0 = e.target.closest('.entry-row');
+  if (row0 && (e.ctrlKey || e.metaKey || e.shiftKey)
+      && !e.target.closest('[data-eact]')
+      && !e.target.closest('.md-ref') && !e.target.closest('.md-tag')
+      && !e.target.closest('img.eimg')) {
+    e.preventDefault(); e.stopPropagation();
+    handleMultiClick(row0.dataset.eid, e.shiftKey);
+    return;
+  }
+
+  const im = e.target.closest('img.eimg.ok');
+  if (im) {
+    const row = im.closest('.entry-row');
+    const hit = row ? findEntry(row.dataset.eid) : null;
+    if (hit) openTopicLightbox(hit.node, hit.e, im.dataset.path);
+    return;
+  }
+
+  const btn = e.target.closest('[data-eact]');
+  if (!btn) return;
+  const row = e.target.closest('[data-eid]');
+  const eid = row.dataset.eid;
+  const hit = findEntry(eid);
+  if (!hit) return;
+  const n = hit.node, ent = hit.e;
+  const act = btn.dataset.eact;
+
+  if (act === 'edit') startEdit(eid, n);
+  else if (act === 'del') enterDelConfirm(eid, n);
+  else if (act === 'moveEntry') moveEntryTo(ent, n);
+  else if (act === 'pin') D.toggleEntryPin(n, ent);
 }

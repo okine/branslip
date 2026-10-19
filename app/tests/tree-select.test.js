@@ -28,7 +28,6 @@ beforeEach(() => {
   wireEntries({
     renderAll: () => {},
     renderMerged: () => {},
-    openPinPage: () => {},
     setReply: () => {},
     setRelevance: () => {},
   });
@@ -115,4 +114,13 @@ test('select：切换时会记住旧话题的滚动位置', () => {
   scrollEl.scrollTop = 4321;
   select('B');
   assert.equal(Store.scrollMemo.get('A'), 4321);
+});
+
+test('recallScroll：内存没有时从 node.scroll（_话题.json）回落', async () => {
+  const { recallScroll } = await import('../entries-jump.js');
+  Store.scrollMemo.clear();
+  const n = Store.node('A');
+  n.scroll = { top: 777 };
+  assert.equal(recallScroll('A', n), 777);
+  assert.equal(Store.getScrollMemo('A'), 777);
 });

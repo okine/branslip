@@ -7,9 +7,26 @@
  */
 
 import { Store } from './store.js';
+import { topicRefIdFromStamp } from './format.js';
 export const findNode   = Store.node;
 export const findParent = Store.parent;
 export const findEntry  = Store.entry;
+
+export function topicRefId(node) {
+  return node && node.topicId ? topicRefIdFromStamp(node.topicId) : null;
+}
+
+export function findTopicByRefId(tid) {
+  if (!tid) return null;
+  const hit = Store.topicByRefId(tid);
+  if (hit) return hit;
+  /* 索引尚未建立 / 旧数据 topicId 格式异常时兜底 */
+  for (const node of Store.nodes()) {
+    if (node.id === '__root__') continue;
+    if (topicRefId(node) === tid) return node;
+  }
+  return null;
+}
 
 export function walk(node, fn, seen = new Set()) {
   if (!node || seen.has(node.id)) return;

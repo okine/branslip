@@ -25,21 +25,16 @@ import { Storage } from './storage.js';
 import { $, esc } from './utils.js';
 import { I } from './icons.js';
 import {
-   findTopicByRefId,
-} from './md.js';
-import {
-  dirOf, writeOrder, rewriteAllOrders,
+  rewriteAllOrders,
 } from './io.js';
-import { fmtStamp, localIdFromMs } from './format.js';
-import { atomicWriteText } from './writeSecurity.js';
-import { clearURLCache } from './image.js';
+import { clearRuntimeCaches } from './cacheClear.js';
 import { 
-  toast, runTopEsc, openMovePicker, confirmDialog, openModal, closeModal 
+  toast, runTopEsc, confirmDialog
 } from './ui.js';
 import { scanChildren } from './loader.js';
 import { enqueue,waitForIdle } from './writer.js';
 import {
-  findNode, findByPath, pathOf, pOf, 
+  findNode, findByPath, pathOf, pOf, findTopicByRefId,
 } from './tree-utils.js';
 import {
   select, wireTree, viewBack, pushViewState
@@ -60,15 +55,8 @@ import {
   setReply, refreshPreview, wireComposer, setRelevance,
 } from './composer.js';
 import { wireTrash } from './trash.js';
-import { openPinPage } from './pages.js';
-import { parseDeepSeekExport, importDeepSeekAsTopics } from './import-deepseek.js';
-import { parseClaudeExport, importClaudeAsTopics } from './import-claude.js';
-import { parseQwenExport, importQwenAsTopics } from './import-qwen.js';
-import { parseTelegramExport, importTelegramAsTopics } from './import-telegram.js';
-import { parseQQExport, importQQAsTopics } from './import-qq.js';
-
-import { wireImage, clearPendingForNode } from './image.js';
-import { initToolbar, syncToolbar } from './toolbar.js';
+import { wireImage } from './image.js';
+import { initFixedButtons, syncFixedButtons } from './fixed-buttons.js';
 
 
 
@@ -76,8 +64,13 @@ import { initToolbar, syncToolbar } from './toolbar.js';
 
 
 
-/* 先建工具栏：importBtn / rescanBtn / folderBtn 的监听在下面按 id 绑定 */
-initToolbar();
+/* 先建固定按钮；重扫/换文件夹由 app 提供，导入流程由 fixed-buttons 自己持有 */
+initFixedButtons({
+  renderAll,
+  select,
+  onRescan: rescanFromDisk,
+  onChangeFolder: changeFolder,
+});
 
 /* 所有存在未发送草稿的话题 id（按写入顺序） */
 function draftTopicIds() {
@@ -132,7 +125,7 @@ function updateComposer() {
 }
 
 function renderMain() { renderTop(); renderEntries(); updateComposer(); }
-function renderAll() { renderTree(); renderMain(); syncToolbar(); }
+function renderAll() { renderTree(); renderMain(); syncFixedButtons(); }
 function updateNavBackTop() {
   const topbar = document.querySelector('#topbar');
   const th = topbar ? topbar.offsetHeight : 60;
@@ -153,192 +146,6 @@ const topbarEl = document.querySelector('#topbar');
 if (topbarEl) new ResizeObserver(updateNavBackTop).observe(topbarEl);
 window.addEventListener('resize', updateNavBackTop);
 updateNavBackTop();
-/* ============================================================
- * DeepSeek 导入
- * ============================================================ */
-
-const importPick = document.createElement('input');
-importPick.type = 'file';
-importPick.accept = '.json,.txt,application/json';
-importPick.style.display = 'none';
-document.body.appendChild(importPick);
-
-/* ---------- 导入确认弹窗 ---------- */
-async function showImportConfirmDialog(source, count) {
-  return new Promise(resolve => {
-    let photoDir = null;
-    let confirmed = false; // ★ 新增：记录是否是用户主动确认的
-
-    const sourceName = {
-      deepseek: 'DeepSeek', claude: 'Claude', qwen: '千问', telegram: 'Telegram', qq: 'QQ'
-    }[source] || source;
-
-    const md = openModal(
-      `<h3>确认导入</h3>
-       <p class="sub">检测到 <b>${sourceName}</b> 导出格式。<br>包含 <b>${count}</b> 个话题。</p>
-       <div style="margin:14px 0; padding:12px; background:var(--paper); border-radius:8px;">
-         <p style="font-size:12.5px; margin-bottom:8px; color:var(--ink2);">如果导出包含图片，请选择对应的文件夹以便一并导入：</p>
-         <div style="display:flex; align-items:center; gap:10px;">
-           <button type="button" class="m-btn ghost" id="pickPhotoBtn" style="padding:6px 12px; font-size:12px; flex:none;">选择图片文件夹</button>
-           <span id="photoStatus" style="font-size:12px; color:var(--ink3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">未选择（仅保留文字与路径）</span>
-         </div>
-       </div>
-       <div class="modal-btns">
-         <button class="m-btn ghost" data-close>取消</button>
-         <button class="m-btn" data-ok style="background:var(--accent);color:#F5F1E4">下一步</button>
-       </div>`,
-      // ★ 修改：onClose 根据 confirmed 决定返回值
-      () => resolve({ ok: confirmed, photoDir })
-    );
-
-    md.querySelector('#pickPhotoBtn').addEventListener('click', async () => {
-      try {
-        if (Storage.isTauri) {
-          const dir = await window.__TAURI__.core.invoke('plugin:dialog|open', {
-            options: { directory: true, multiple: false, title: '选择图片文件夹' },
-          });
-          if (dir) {
-            photoDir = dir;
-            md.querySelector('#photoStatus').textContent = dir.split(/[\\\/]/).pop() || dir;
-          }
-        } else {
-          const dir = await window.showDirectoryPicker({ mode: 'read' });
-          if (dir) {
-            photoDir = dir;
-            md.querySelector('#photoStatus').textContent = dir.name;
-          }
-        }
-      } catch (e) {
-        if (e.name !== 'AbortError') toast('选择文件夹失败：' + (e.message || e));
-      }
-    });
-
-    md.querySelector('[data-ok]').addEventListener('click', () => {
-      confirmed = true; // ★ 标记为确认
-      closeModal();     // 此时会触发 onClose -> resolve({ ok: true, photoDir })
-    });
-  });
-}
-/* 导入失败时，把错误详情写到所选父话题目录，方便事后排查。
-   文件名以 _ 开头，loader 不会把它当记录/月份文件。 */
-async function writeImportFailureReport(parent, err, meta) {
-  const pdir = dirOf(parent);
-  if (!pdir) {
-    toast('导入失败，且目标目录不可用，错误日志未写入');
-    return;
-  }
-  const now = Date.now();
-  const name = '_导入失败-' + localIdFromMs(now) + '.md';
-  const parentPath = pathOf(parent).map(x => x.title).filter(Boolean).join(' / ') || '根目录';
-  const detail = String((err && err.stack) || (err && err.message) || err || '未知错误')
-    .replace(/```/g, "'''");
-  const body = [
-    '# 导入失败 · ' + fmtStamp(now),
-    '',
-    '- 时间：' + fmtStamp(now),
-    '- 来源：' + (meta.source || '未知'),
-    '- 文件：' + (meta.fileName || '未知'),
-    '- 识别到的对话数：' + (meta.count || 0),
-    '- 目标父话题：' + parentPath,
-    '',
-    '## 错误详情',
-    '',
-    '```text',
-    detail,
-    '```',
-    '',
-  ].join('\n');
-
-  const r = await enqueue(() => atomicWriteText(pdir, name, body));
-  if (r.ok) toast('已把错误详情写入：' + name);
-  else toast('错误详情写入失败：' + ((r.err && r.err.message) || r.err));
-}
-
-/* ---------- 核心导入流程 ---------- */
-async function onImportFile(file) {
-  const text = await file.text();
-
-  const attempts = [
-    ['deepseek', parseDeepSeekExport, importDeepSeekAsTopics],
-    ['claude',   parseClaudeExport,   importClaudeAsTopics],
-    ['qwen',     parseQwenExport,     importQwenAsTopics],
-    ['telegram', parseTelegramExport, importTelegramAsTopics],
-    ['qq',       parseQQExport,       importQQAsTopics],
-  ];
-
-  let conversations = null, source = '', importFn = null;
-  const _warn = console.warn;
-  console.warn = () => {}; // 静音探测期的警告
-  for (const [src, parseFn, imp] of attempts) {
-    try {
-      conversations = parseFn(text);
-      source = src;
-      importFn = imp;
-      break;
-    } catch (e) {}
-  }
-  console.warn = _warn; // 恢复
-
-  if (!conversations) {
-    toast('无法识别的文件格式');
-    return;
-  }
-
-  // ★ 弹出确认与图片文件夹选择
-  const { ok, photoDir } = await showImportConfirmDialog(source, conversations.length);
-  if (!ok) return;
-
-  const hint = conversations.length === 1
-    ? '把「' + conversations[0].title + '」导入到哪个话题下？'
-    : '把 ' + conversations.length + ' 个对话导入到哪个话题下？';
-
-  openMovePicker(hint, [], async (parentId) => {
-    const parent = findNode(parentId);
-    if (!parent) { toast('找不到目标话题'); return; }
-    try {
-      const nodes = [];
-      const r = await enqueue(async (report) => {
-        // ★ 把 photoDir 透传给 importFn
-        const created = await importFn(dirOf(parent), conversations, report, { photoDir });
-        for (const n of created) { parent.children.push(n); nodes.push(n); }
-        Store.rebuildIndex();
-        Store.resetMetaBuilt();
-        await writeOrder(parent);
-      });
-      /* enqueue 永远 resolve，失败在 r.ok 里 —— 不能靠 try/catch 捕获 */
-      if (!r.ok) throw (r.err || new Error('磁盘写入失败'));
-      /* importAsTopics 会逐对话 catch；如果全失败，这里仍然是 ok */
-      if (!nodes.length) throw new Error('导入任务完成，但没有任何话题被写入（详见控制台）');
-
-      renderAll();
-      if (nodes[0]) select(nodes[0].id);
-      toast('已导入 ' + nodes.length + ' 个话题，共 ' +
-        nodes.reduce((s, n) => s + n.entries.length, 0) + ' 条记录');
-      console.log('[import] 识别为', source, '，解析出', conversations.length, '个对话');
-    } catch (e) {
-      console.error('[import]', e);
-      /* 可能已经有一部分话题进了内存，先如实刷新 */
-      renderAll();
-      toast('导入失败：' + ((e && e.message) || e));
-      await writeImportFailureReport(parent, e, {
-        source,
-        fileName: file.name,
-        count: conversations.length,
-      });
-    }
-  });
-}
-
-importPick.addEventListener('change', () => {
-  const f = importPick.files[0];
-  importPick.value = '';
-  if (f) onImportFile(f);
-});
-
-$('#importBtn').addEventListener('click', () => {
-  if (!Store.fs.ready) { toast('尚未连接文件夹'); return; }
-  importPick.click();
-});
 
 /* ============================================================
  * 图标初始化
@@ -501,7 +308,7 @@ document.addEventListener('click', e => {
  * 侧栏按钮
  * ============================================================ */
 
-$('#rescanBtn').addEventListener('click', async () => {
+async function rescanFromDisk() {
   if (!Store.fs.ready) { toast('尚未连接文件夹'); return; }
 
    /* ★ 新增：先问要不要等 pending 写完 */
@@ -556,11 +363,8 @@ if (draftIds.length) {
 
   enqueue(async () => {
     Store.root.children = await scanChildren(Store.dir);
-    for (const n of Store.nodes()) {
-      if (n.id !== '__root__') clearPendingForNode(n.id);
-    };
     Store.rebuildIndex();
-    clearURLCache();
+    clearRuntimeCaches();
     Store.resetMetaBuilt();
     /* ★ 重扫后：用新扫出来的顺序重写所有 _顺序.json */
     try {
@@ -604,10 +408,10 @@ if (draftIds.length) {
 
     toast('已从磁盘重新读取');
   });
-});
+}
 
 /*提醒*/
-$('#folderBtn').addEventListener('click', async () => {
+async function changeFolder() {
   /* ── Tauri 分支 ── */
   if (Storage.isTauri) {
     let dir;
@@ -685,7 +489,7 @@ $('#folderBtn').addEventListener('click', async () => {
   }
 
   enqueue(async () => { await connect(h); });
-});
+}
 
 /* ============================================================
  * 启动流程
@@ -713,8 +517,8 @@ wireEntries({
   setReply,
   setRelevance,   // ★
   renderAll,
-  openPinPage,
   renderMerged,
+  select,
 });
 wireTrash({ renderAll });
 wireTree({ renderAll, savePrefs, refreshPreview });

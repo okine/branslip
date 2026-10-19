@@ -504,6 +504,8 @@ export function openFullPage(opts) {
  function redraw() {
   const oldList = d.querySelector('.pp-list');
   const prevTop = (opts.keepScroll !== false && oldList) ? oldList.scrollTop : 0;
+  const oldSide = d.querySelector('.pp-side');
+  const prevSideTop = oldSide ? oldSide.scrollTop : 0;
 
   const rawTitle = (typeof opts.title === 'function') ? opts.title() : opts.title;
   const title   = rawTitle == null ? '' : String(rawTitle);
@@ -528,6 +530,8 @@ export function openFullPage(opts) {
 
   const nextList = d.querySelector('.pp-list');
   if (nextList && prevTop) nextList.scrollTop = prevTop;
+  const nextSide = d.querySelector('.pp-side');
+  if (nextSide && prevSideTop) nextSide.scrollTop = prevSideTop;
 
   if (typeof opts.afterDraw === 'function') opts.afterDraw(api);
 }

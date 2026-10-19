@@ -110,6 +110,15 @@ resetImgObserver();   // 首次建立
     }
   }
 
+  /** 关闭全屏页时，把它里面还没进入视口的图片从全局观察器摘掉 */
+  export function unobserveImages(scope) {
+    if (!scope) return;
+    for (const img of scope.querySelectorAll('img.eimg[data-src]')) {
+      imgObserver.unobserve(img);
+      hydratedSet.delete(img);
+    }
+  }
+
 export async function hydrateIn(container, node) {
   const jobs = [];
   for (const img of container.querySelectorAll('img.eimg[data-src]')) {

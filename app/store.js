@@ -13,6 +13,7 @@
  */
 
 import { Mutate } from './mutate.js';
+import { topicRefIdFromStamp } from './format.js';
 
 const _state = {
   dirHandle: null,
@@ -26,6 +27,8 @@ const _state = {
   nodeIndex:   new Map(),   // id → node
   parentIndex: new Map(),   // id → parent node
   entryIndex:  new Map(),   // entry.id → { e, node }
+  blockIndex:  new Map(),   // blockId → { e, node }
+  topicRefIndex: new Map(), // topicRefId → node
 
   ui: {
     selectedId:      null,
@@ -38,6 +41,7 @@ const _state = {
     flashEntry:      null,
     merged:          null,
     loadedStart:     0,
+    loadedEnd:       0,
     multiSelect:     new Set(),
     lastMultiClick:  null,
     expandedFolds:   new Set(),
@@ -64,6 +68,27 @@ const _state = {
 function node(id)  { return id ? _state.nodeIndex.get(id)  || null : null; }
 function parent(id){ return id ? _state.parentIndex.get(id)|| null : null; }
 function entry(id) { return id ? _state.entryIndex.get(id) || null : null; }
+function blockEntry(blockId) { return blockId ? _state.blockIndex.get(blockId) || null : null; }
+function topicByRefId(tid) { return tid ? _state.topicRefIndex.get(tid) || null : null; }
+
+/* 滚动记忆：内存只保留最近 10 个话题，命中即提到队尾 */
+const SCROLL_MEMO_MAX = 10;
+function setScrollMemo(id, top) {
+  if (!id || !Number.isFinite(top)) return;
+  _state.scrollMemo.delete(id);
+  _state.scrollMemo.set(id, top);
+  while (_state.scrollMemo.size > SCROLL_MEMO_MAX) {
+    const oldest = _state.scrollMemo.keys().next().value;
+    _state.scrollMemo.delete(oldest);
+  }
+}
+function getScrollMemo(id) {
+  if (!id || !_state.scrollMemo.has(id)) return null;
+  const top = _state.scrollMemo.get(id);
+  _state.scrollMemo.delete(id);
+  _state.scrollMemo.set(id, top);
+  return top;
+}
 
 /* ---- 变更 ---- */
 function setDir(h) { _state.dirHandle = h; }
@@ -76,14 +101,22 @@ function rebuildIndex() {
   _state.nodeIndex.clear();
   _state.parentIndex.clear();
   _state.entryIndex.clear();
+  _state.blockIndex.clear();
+  _state.topicRefIndex.clear();
   _state.nodeIndex.set(_state.root.id, _state.root);
 
   (function rec(p) {
     for (const c of p.children) {
       _state.nodeIndex.set(c.id, c);
       _state.parentIndex.set(c.id, p);
+      if (c.topicId) {
+        const tid = topicRefIdFromStamp(c.topicId);
+        if (tid) _state.topicRefIndex.set(tid, c);
+      }
       for (const e of c.entries) {
-        _state.entryIndex.set(e.id, { e, node: c });
+        const rec = { e, node: c };
+        _state.entryIndex.set(e.id, rec);
+        _state.blockIndex.set(Mutate.entryBlockId(e), rec);
       }
       rec(c);
     }
@@ -108,16 +141,45 @@ function resetMetaBuilt() {
 function indexNode(n, p) {
   _state.nodeIndex.set(n.id, n);
   _state.parentIndex.set(n.id, p);
-  for (const e of n.entries) _state.entryIndex.set(e.id, { e, node: n });
+  if (n.topicId) {
+    const tid = topicRefIdFromStamp(n.topicId);
+    if (tid) _state.topicRefIndex.set(tid, n);
+  }
+  for (const e of n.entries) {
+    const rec = { e, node: n };
+    _state.entryIndex.set(e.id, rec);
+    _state.blockIndex.set(Mutate.entryBlockId(e), rec);
+  }
 }
 
 function unindexNode(n) {
   _state.nodeIndex.delete(n.id);
   _state.parentIndex.delete(n.id);
-  for (const e of n.entries) _state.entryIndex.delete(e.id);
+  if (n.topicId) {
+    const tid = topicRefIdFromStamp(n.topicId);
+    if (tid) _state.topicRefIndex.delete(tid);
+  }
+  for (const e of n.entries) {
+    _state.entryIndex.delete(e.id);
+    _state.blockIndex.delete(Mutate.entryBlockId(e));
+  }
 }
 
-function indexEntry(e, n)  { _state.entryIndex.set(e.id, { e, node: n }); }
+function indexEntry(e, n)  {
+  const rec = { e, node: n };
+  _state.entryIndex.set(e.id, rec);
+  _state.blockIndex.set(Mutate.entryBlockId(e), rec);
+}
+
+/* 时序：composer 先 addEntry，再冻结 _writeStamp；blockId 可能因此变化。
+   把旧的 blockId 映射删掉，写新的。 */
+function reindexEntry(e, n, oldBlockId) {
+  const rec = { e, node: n };
+  _state.entryIndex.set(e.id, rec);
+  const olds = Array.isArray(oldBlockId) ? oldBlockId : [oldBlockId];
+  for (const id of olds) if (id) _state.blockIndex.delete(id);
+  _state.blockIndex.set(Mutate.entryBlockId(e), rec);
+}
 /* ---- 原子变更：内存 + 索引一起做 ----
  *
  * 所有对 entries 的增删都走这三个入口。
@@ -127,19 +189,26 @@ function indexEntry(e, n)  { _state.entryIndex.set(e.id, { e, node: n }); }
 
 function addEntry(node, init) {
   const e = Mutate.addEntry(node, init);
-  _state.entryIndex.set(e.id, { e, node });
+  const rec = { e, node };
+  _state.entryIndex.set(e.id, rec);
+  _state.blockIndex.set(Mutate.entryBlockId(e), rec);
   return e;
 }
 
 function insertSorted(node, init) {
   const r = Mutate.insertSorted(node, init);
-  _state.entryIndex.set(r.entry.id, { e: r.entry, node });
+  const rec = { e: r.entry, node };
+  _state.entryIndex.set(r.entry.id, rec);
+  _state.blockIndex.set(Mutate.entryBlockId(r.entry), rec);
   return r;
 }
 
 function removeEntry(node, id) {
   const r = Mutate.removeEntry(node, id);
-  if (r) _state.entryIndex.delete(r.entry.id);
+  if (r) {
+    _state.entryIndex.delete(r.entry.id);
+    _state.blockIndex.delete(Mutate.entryBlockId(r.entry));
+  }
   return r;
 }
 
@@ -160,7 +229,10 @@ export const Store = {
   setMetaCounts,isMetaBuilt, resetMetaBuilt,
 
   // 查询
-  node, parent, entry,
+  node, parent, entry, blockEntry,
+  topicByRefId,
+  setScrollMemo, getScrollMemo,
+  reindexEntry,
 
 
   nodes() {

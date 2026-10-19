@@ -25,7 +25,8 @@ import { esc } from './utils.js';
 import { parseStampToMs, 
   unescapeEntryBody,topicRefIdFromStamp,entryBlockId } from './format.js';
 import { Store } from './store.js';
-import { pathOf } from './tree-utils.js';
+import { pathOf, topicRefId, findTopicByRefId } from './tree-utils.js';
+export { topicRefId, findTopicByRefId };
 
 
 /* ---------- marked 配置 ---------- */
@@ -137,18 +138,28 @@ export function normalizeTopicRefId(tid) {
 
 /* 镜像卡片：把源记录渲染成一张卡。内部不再展开镜像（防循环）。 */
     function renderMirrorHTML(tid, block) {
-      const node = findTopicByRefId(tid);
-      if (!node) {
-        return '<div class="md-mirror missing">' +
-          '<div class="md-mirror-head">▣ 源话题不存在</div></div>';
+      /* 正常路径：blockId 全局索引 O(1)，不再为每个镜像扫 node.entries */
+      let node = null, e = null;
+      const hit = Store.blockEntry(block);
+      if (hit && (!tid || topicRefId(hit.node) === tid)) {
+        node = hit.node;
+        e = hit.e;
+      } else {
+        node = findTopicByRefId(tid);
+        if (!node) {
+          return '<div class="md-mirror missing">' +
+            '<div class="md-mirror-head">▣ 源话题不存在</div></div>';
+        }
+        /* 只有索引缺失/损坏时才走线性兜底 */
+        const idx = node.entries.findIndex(x => entryBlockId(x) === block);
+        if (idx < 0) {
+          return '<div class="md-mirror missing">' +
+            '<div class="md-mirror-head">▣ 源记录不存在</div>' +
+            '<div class="md-mirror-path">' + esc(node.title) + '</div></div>';
+        }
+        e = node.entries[idx];
       }
-      const idx = node.entries.findIndex(e => entryBlockId(e) === block);
-      if (idx < 0) {
-        return '<div class="md-mirror missing">' +
-          '<div class="md-mirror-head">▣ 源记录不存在</div>' +
-          '<div class="md-mirror-path">' + esc(node.title) + '</div></div>';
-      }
-      const e = node.entries[idx];
+
       const body = renderMirrorBody(e)   // ★ 一层展开
       return '<div class="md-mirror" data-node="' + node.id + '" ' +
             'data-tid="' + tid + '" data-block="' + block + '">' +
@@ -362,20 +373,8 @@ export function parseEntries(text) {
 
 /* ---------- 引用系统 ---------- */
 
-/* 话题节点 → 引用 ID。
- * node.topicId 是 _话题.json 里 fmtStamp() 写入的字符串。 */
-export function topicRefId(node) {
-  return node && node.topicId ? topicRefIdFromStamp(node.topicId) : null;
-}
-
-export function findTopicByRefId(tid) {
-  if (!tid) return null;
-  for (const node of Store.nodes()) {
-    if (node.id === '__root__') continue;
-    if (topicRefId(node) === tid) return node;
-  }
-  return null;
-}
+/* topicRefId / findTopicByRefId 已迁到 tree-utils.js；
+   md.js 只保留 buildRef，并 re-export 以兼容旧调用。 */
 
 /* 构造一条 entry 的引用串。
    优先 topicId（跨重命名稳定），否则回落到路径。

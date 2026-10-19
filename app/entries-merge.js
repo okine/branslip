@@ -15,12 +15,14 @@ import {
   toast, openMenu, closeSide,openTopicPicker,pushEsc
 } from './ui.js';
 import { walk } from './tree-utils.js';
-import { renderEntries, renderPins } from './entries.js';
+import { renderEntries } from './entries.js';
+import { renderPins } from './pins.js';
 import { clearEarlierObs } from './entries-jump.js';
 import {
   entryHTML, setDialogueEnabled,dayChipHTML, 
 } from './entries-render.js';
 import { ensureGlobalMeta } from './meta-row.js';
+import { captureScrollAnchor, restoreScrollAnchor } from './scroll-utils.js';
 /* ---------- 依赖注入 ---------- */
 let D = { renderAll: () => {} };
 export function wireMerge(h) { Object.assign(D, h); }
@@ -76,7 +78,6 @@ export function renderMerged() {
   ensureGlobalMeta();
   mergedStart = Math.max(0, list.length - MERGED_INITIAL);
   renderMergedRange();
-  scheduleMergedIdleLoad();
 }
 function renderMergedRange() {
   const box = $('#entries');
@@ -105,7 +106,9 @@ function renderMergedRange() {
   box.className = '';
   box.innerHTML = h;
   hydrateImages();
-  armMergedLoadEarlier();
+  setTimeout(() => {
+    if (Store.ui.merged && document.getElementById('loadEarlier')) armMergedLoadEarlier();
+  }, 0);
 }
 function loadEarlierMerged() {
   if (mergedLoading) return;
@@ -122,6 +125,7 @@ function loadEarlierMerged() {
   try {
     const oldH = sc.scrollHeight;
     const oldTop = sc.scrollTop;
+    const anchor = captureScrollAnchor(sc, box);
     const list = mergedList;
 
     let h = '';
@@ -142,9 +146,10 @@ function loadEarlierMerged() {
     if (start === 0) sentinel.remove();
     else sentinel.textContent = '向上滚动加载更早的记录 · 还有 ' + start + ' 条';
 
-    /* 锚定滚动：新内容插在上方，让 scrollTop 跟着往上走 */
-    const newH = sc.scrollHeight;
-    sc.scrollTo({ top: oldTop + (newH - oldH), behavior: 'auto' });
+    if (!restoreScrollAnchor(sc, anchor)) {
+      const newH = sc.scrollHeight;
+      sc.scrollTo({ top: oldTop + (newH - oldH), behavior: 'auto' });
+    }
     hydrateImages(box);
   } finally {
     mergedLoading = false;
@@ -259,4 +264,4 @@ function toggleDialogue() {
 }
 
 /* ---------- 事件 ---------- */
-/* 合并入口按钮现在由 toolbar.js 统一排版，这里只保留可复用的 openMergeMenu。 */
+/* 合并入口按钮现在由 fixed-buttons.js 统一排版，这里只保留可复用的 openMergeMenu。 */

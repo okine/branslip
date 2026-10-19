@@ -9,26 +9,24 @@
  *
  * 两个页面都是"从主区进入的临时全屏视图"：
  *   - pickItPage()  随机抽几条记录看看
- *   - openPinPage()   当前话题的所有置顶消息
+ *   - pickItPage()     拾之（随机 / 关联一览）
+ *   - openTimeArrow()  时之箭
  *
+ * 置顶消息页已迁到 pins.js。
  * 与其它模块的边界：
- *   - 依赖 entries.js 的 buildEntryMenuItems / toggleEntryPin / renderPins
- *   - entries.js 需要在 pinBar 点击时调 openPinPage —— 通过 wireEntries 注入
+ *   - 依赖 entries.js 的 renderEntries（跳转到记录）
  */
 
 import { $,esc, badgeHTML,badgeColor, countLabel } from './utils.js';
 import { I } from './icons.js';
 import { Store } from './store.js';
-import { Mutate } from './mutate.js';
 import { fmtStamp,parseStamp,fmtFull } from './format.js';
 import { parseRelevanceHeader } from './md.js';
 import { renderEntryBody } from './entries-render.js';
-import { hydrateImages, hydrateIn,resetImgObserver } from './image.js';
-import { walk, findNode,stats } from './tree-utils.js';
+import { hydrateImages, unobserveImages } from './image.js';
+import { walk,stats } from './tree-utils.js';
 import { select } from './tree.js';
-import { scrollIntoViewIn, flashEl } from './scroll-utils.js';
-import { renderEntries, toggleEntryPin } from './entries.js';
-import { jumpToRow } from './entries-jump.js';
+import { renderEntries } from './entries.js';
 import { toast, confirmDialog, makeEscapable, openFullPage } from './ui.js';
 
 
@@ -143,6 +141,7 @@ export function pickItPage() {
   }
 
   let picked = pickThree();
+  let pageEl = null;
 
   openFullPage({
     title: () => mode === 'relevance' ? '关联一览' : '拾之',
@@ -159,13 +158,19 @@ export function pickItPage() {
     render: () => mode === 'relevance' ? renderRelContent() : renderRandom(),
 
     afterDraw: (api) => {
+      pageEl = api.el;
       /* 不重置全局 observer：主列表里还没水合的图片不应该因为打开拾之而丢观察 */
       hydrateImages(api.el);
+    },
+
+    onClose: () => {
+      if (pageEl) unobserveImages(pageEl);
     },
 
     onEvent: (ev, api) => {
       const modeBtn = ev.target.closest('[data-pickit-mode]');
       if (modeBtn) {
+        if (pageEl) unobserveImages(pageEl);
         mode = modeBtn.dataset.pickitMode;
         if (mode === 'relevance') {
           relGroups = buildRelGroups();
@@ -178,6 +183,7 @@ export function pickItPage() {
       }
 
       if (ev.target.closest('.pickit-refresh')) {
+        if (pageEl) unobserveImages(pageEl);
         picked = pickThree();
         api.redraw();
         return;
@@ -487,65 +493,4 @@ function spanPx(ms) {
   return Math.max(400, days * 1.5);
 }
 
-/* ============================================================
- * 置顶消息页
- * ============================================================ */
-
-export function openPinPage() {
-  const n = Store.node(Store.ui.selectedId);
-  if (!n) return;
-  let list = Mutate.pinnedEntries(n);
-
-  openFullPage({
-    title: () => '置顶消息 · ' + list.length,
-
-    render: () => {
-      if (!list.length)
-        return '<div class="pp-empty">这个话题还没有置顶的记录</div>';
-      return list.map(e => {
-        const { html: body } = renderEntryBody(e);
-        return '<div class="pp-card" data-eid="' + e.id + '">' + body +
-          '<span class="meta">' + fmtStamp(e.createdAt) +
-            (e.edited ? ' · 已编辑' : '') + '</span>' +
-          '<div class="pp-acts">' +
-            '<button data-goto="' + e.id + '">定位到消息</button>' +
-            '<button data-unpin="' + e.id + '">取消置顶</button>' +
-          '</div></div>';
-      }).join('');
-    },
-
-    afterDraw: (api) => {
-      resetImgObserver();
-      hydrateIn(api.el, n);
-    },
-
-    onEvent: (ev, api) => {
-      /* 取消置顶 */
-      const un = ev.target.closest('[data-unpin]');
-      if (un) {
-        const ent = n.entries.find(x => x.id === un.dataset.unpin);
-        if (!ent) return;
-        toggleEntryPin(n, ent);
-        list = Mutate.pinnedEntries(n);
-        api.redraw();
-        if (!list.length) setTimeout(api.close, 900);
-        return;
-      }
-      /* 定位到消息 */
-      const go = ev.target.closest('[data-goto]');
-      if (go) {
-        api.close();
-        const el = document.querySelector(
-          '#entries .entry-row[data-eid="' + go.dataset.goto + '"]'
-        );
-        if (el) {
-          scrollIntoViewIn($('#entriesScroll'), el, { align: 'center' });
-          flashEl(el);
-        } else {
-          const cur = findNode(Store.ui.selectedId);
-          if (cur) jumpToRow(cur, go.dataset.goto);
-        }
-      }
-    },
-  });
-}
+/* 置顶消息页已迁到 pins.js */

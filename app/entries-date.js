@@ -13,19 +13,22 @@
  */
 
 import { $, esc } from './utils.js';
-import { scrollIntoViewIn } from './scroll-utils.js';
+import { Store } from './store.js';
 import { toast, makeEscapable, wireOutsideClose } from './ui.js';
 import { openCalendarPicker } from './calendar.js';
 import { openTimelinePanel } from './timeline.js';
 import { readTimeline } from './io.js';                                       
-import { dayKeyNum } from './format.js';
+import { dayKey, dayKeyNum, fmtDay } from './format.js';
+import { jumpToRow } from './entries-jump.js';
 
 let dateJumpTimer = null;
+let dateMenuClose = null;
 
 /* ---------- 滚动时同步 chip ---------- */
 
 function currentMidDay() {
   const sc = $('#entriesScroll');
+  if (!sc) return null;
   const chips = [...sc.querySelectorAll('.day-chip[data-day]')];
   if (!chips.length) return null;
   const scRect = sc.getBoundingClientRect();
@@ -53,10 +56,21 @@ export function updateDateJump() {
 
 export function openDatePicker() {
   const sc = $('#entriesScroll');
-  const chips = [...sc.querySelectorAll('.day-chip[data-day]')];
-  if (!chips.length) return;
+  const n = Store.node(Store.ui.selectedId);
+  if (!sc || !n || !n.entries.length) return;
 
-  const uniq = [...new Map(chips.map(c => [c.dataset.day, c.textContent])).entries()];
+  if (dateMenuClose) dateMenuClose();
+
+  /* 日期列表必须来自整个话题，而不是当前已渲染的 80 条 */
+  const dayMap = new Map();
+  for (const e of n.entries) {
+    const k = dayKey(e.createdAt);
+    if (!dayMap.has(k)) dayMap.set(k, fmtDay(e.createdAt));
+  }
+  const uniq = [...dayMap.entries()]
+    .sort((a, b) => dayKeyNum(a[0]) - dayKeyNum(b[0]));
+  if (!uniq.length) return;
+
   const curChip = currentMidDay();
   const curDay = (curChip && curChip.dataset.day)
               || $('#dateJump').dataset.day
@@ -67,7 +81,6 @@ export function openDatePicker() {
   menu.innerHTML =
     '<div class="date-menu-head">' +
       '<button type="button" data-open-calendar>📅 选择日期</button>' +
-      
     '</div>' +
     '<div class="date-menu-body">' +
       uniq.map(([d, t]) =>
@@ -77,12 +90,13 @@ export function openDatePicker() {
     '</div>';
   document.body.appendChild(menu);
 
-  // ★ 一个 close，一个 AbortController，一个 esc 栈登记
   const ac = new AbortController();
   const close = makeEscapable(() => {
     if (menu.isConnected) menu.remove();
     ac.abort();
+    if (dateMenuClose === close) dateMenuClose = null;
   });
+  dateMenuClose = close;
 
   /* 滚动区定位到当前日期 */
   const body = menu.querySelector('.date-menu-body');
@@ -106,8 +120,6 @@ export function openDatePicker() {
     openCustomCalendar(sc, curDay);
   });
 
-  
-
   /* 点击外部关闭 —— 用 signal 绑定，close 时一起摘掉 */
   wireOutsideClose(menu, close, ac.signal, t => t.id === 'dateJump');
 }
@@ -115,20 +127,18 @@ export function openDatePicker() {
 
 /* ---------- 跳到某天 ---------- */
 
-function jumpToDay(sc, dayKey) {
-  const chip = sc.querySelector('.day-chip[data-day="' + dayKey + '"]');
-  if (chip) {
-    scrollIntoViewIn(sc, chip, { align: 'top', smooth: true });
-  } else {
-    toast('那天没有记录');
-  }
+function jumpToDay(sc, key) {
+  const n = Store.node(Store.ui.selectedId);
+  if (!n) return;
+  const target = n.entries.find(e => dayKey(e.createdAt) === key);
+  if (target) jumpToRow(n, target.id);
+  else toast('那天没有记录');
 }
 
 async function openCustomCalendar(sc, currentDayKey) {
-  /* 收集有记录的日期 */
-  const chips = sc.querySelectorAll('.day-chip[data-day]');
+  const n = Store.node(Store.ui.selectedId);
   const entryDays = new Set();
-  for (const c of chips) entryDays.add(c.dataset.day);
+  if (n) for (const e of n.entries) entryDays.add(dayKey(e.createdAt));
 
   /* 读已有区间（只用于显示） */
   let ranges = [];
@@ -150,25 +160,22 @@ async function openCustomCalendar(sc, currentDayKey) {
   });
 }
 
-  
-  function pickDayAndJump(sc, dayKey) {
-    const firstChip = sc.querySelector('.day-chip[data-day]');
-    if (!firstChip) { toast('还没有任何记录'); return; }
-  
-    /* 早于第一条记录 → 跳到第一条 */
-    if (dayKeyNum(dayKey) < dayKeyNum(firstChip.dataset.day)) {
-      scrollIntoViewIn(sc, firstChip, { align: 'top', smooth: true });
-      toast('已跳到最早记录');
-      return;
-    }
-  
-    const chip = sc.querySelector('.day-chip[data-day="' + dayKey + '"]');
-    if (chip) {
-      scrollIntoViewIn(sc, chip, { align: 'top', smooth: true });
-    } else {
-      toast('那天没有记录');
-    }
+function pickDayAndJump(sc, key) {
+  const n = Store.node(Store.ui.selectedId);
+  if (!n || !n.entries.length) { toast('还没有任何记录'); return; }
+
+  const first = n.entries[0];
+  /* 早于第一条记录 → 跳到第一条 */
+  if (dayKeyNum(key) < dayKeyNum(dayKey(first.createdAt))) {
+    jumpToRow(n, first.id);
+    toast('已跳到最早记录');
+    return;
   }
+
+  const target = n.entries.find(e => dayKey(e.createdAt) === key);
+  if (target) jumpToRow(n, target.id);
+  else toast('那天没有记录');
+}
 /* ---------- 事件绑定（模块加载时执行一次） ---------- */
 
 $('#dateJump').addEventListener('click', openDatePicker);

@@ -1,7 +1,7 @@
 // tests/composer-time.test.js
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { nextCreatedAtMs } from '../composer-time.js';
+import { nextCreatedAtMs } from '../format.js';
 
 test('空 entries → 直接用 now', () => {
   const now = 1_700_000_000_000;

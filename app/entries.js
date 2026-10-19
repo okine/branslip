@@ -22,14 +22,11 @@
  *   - 其它一切依赖都从模块直接 import
  */
 
-import { $, esc, countLabel } from './utils.js';
-import { I } from './icons.js';
+import { $, esc } from './utils.js';
 import { Store } from './store.js';
 import { Mutate } from './mutate.js';
-import { fmtStamp, dayKey } from './format.js';
-import { writePins, writeFolds } from './io.js';
-import { hydrateImages, openTopicLightbox,resetImgObserver } from './image.js';
-import { enqueue } from './writer.js';
+import { dayKey } from './format.js';
+import { hydrateImages, resetImgObserver } from './image.js';
 import { toast, openMenuAt } from './ui.js';
 import {
    entryInnerHTML, entryBlockHTML, 
@@ -37,26 +34,29 @@ import {
 } from './entries-render.js';
 import { scrollIntoViewIn, scrollToBottom, flashEl } from './scroll-utils.js';
 import {
-  startEdit, 
-  enterDelConfirm, 
-  moveEntryTo,
-  handleMultiClick, clearMultiSelect, doFold,
-  buildEntryMenuItems,
+  clearMultiSelect, doFold,
+  buildEntryMenuItems, handleEntriesClick,
   wireOps,
 } from './entries-ops.js';
+import {
+  renderPins, toggleEntryPin, rebuildPinRowMap, syncPinCursorFromScroll,
+} from './pins.js';
 import { updateDateJump } from './entries-date.js';
-import { select } from './tree.js';
 import './ref-preview.js';
 import {
-  renderMetaRow,
-  replaceMetaRow,
   addGlobalMetaFor,
   ensureGlobalMeta,
   refreshMetaForRefs,
 } from './meta-row.js';
 import {
   armLoadEarlier,
-  scheduleIdleLoad,
+  armLoadLater,
+  clearEarlierObs,
+  clearLaterObs,
+  rememberScroll,
+  setDirectWindow,
+  isDirectWindow,
+  updateScrollBtn,
   jumpToRow, 
   wireEntriesJump,
 } from './entries-jump.js';
@@ -68,8 +68,8 @@ let D = {
   setRelevance:  () => {},   // ★
   
   renderAll: () => {},
-  openPinPage: () => {},
   renderMerged: () => {},
+  select: () => {},
 };
 export function wireEntries(h) { Object.assign(D, h); }
 
@@ -77,36 +77,11 @@ export function wireEntries(h) { Object.assign(D, h); }
 const PAGE_SIZE = 80;       // 初始渲染条数（保留原语义）
 
 let firstMain = true;
-let _lastPinSig = null;
 let dateJumpRaf = null;
-let suppressPinSyncUntil = 0;
-let pinRowMap = new Map();
 
 const findEntry = Store.entry;
 
-
-
-
-
-
-
 /* 只重绘指定 entry 那一行的 meta-row */
-function refreshRowMetaFor(e, n) {
-  const row = document.querySelector('#entries .entry-row[data-eid="' + e.id + '"]');
-  replaceMetaRow(row, e, n);
-}
-
-
-
-/* 建表 —— 只在 DOM 结构变动后调用 */
-function rebuildPinRowMap() {
-  pinRowMap = new Map();
-  const box = document.getElementById('entries');
-  if (!box) return;
-  for (const row of box.querySelectorAll('.entry-row')) {
-    if (row.dataset.eid) pinRowMap.set(row.dataset.eid, row);
-  }
-}
 /* ---------- 单条记录的 HTML ---------- */
 
 
@@ -118,6 +93,9 @@ function rebuildPinRowMap() {
 
 
 export function renderEntries() {
+  setDirectWindow(false);
+  clearEarlierObs();
+  clearLaterObs();
   /* ★ flashEntry 是"下一帧要闪的那一条"，必须在本帧被消费掉 ——
      所以在这里就快照 + 清空，而不是等到函数末尾。
      老实现只在成功路径末尾清，下面三个早退分支（未选中 / 空话题 / 合并视图）
@@ -128,12 +106,12 @@ export function renderEntries() {
   Store.ui.flashEntry = null;
 
   if (Store.ui.merged) {
-    pinRowMap = new Map();      // ★ 清空
+    rebuildPinRowMap();
     return D.renderMerged();
   }
   const box = $('#entries'), n = findNode(Store.ui.selectedId);
   if (!n) {
-    pinRowMap = new Map();
+    rebuildPinRowMap();
     box.className = '';
     box.innerHTML =
       '<div class="empty"><div class="q">“</div><h3>从左侧开始第一层话题</h3>' +
@@ -142,7 +120,7 @@ export function renderEntries() {
     return;
   }
   if (!n.entries.length ) {
-    pinRowMap = new Map();
+    rebuildPinRowMap();
     box.className = '';
     box.innerHTML = '<div class="empty"><div class="q">“</div><h3>「' + esc(n.title) + '」还是空白的</h3>' +
       '<p>在下方输入框写下第一条记录，按下 <kbd>Enter</kbd> 即可。<br>也可以直接粘贴或拖入图片，或在左侧继续细分子话题。</p></div>';
@@ -154,6 +132,7 @@ export function renderEntries() {
   const total = n.entries.length;
   const start = Math.max(0, total - PAGE_SIZE);
   Store.ui.loadedStart = start;
+  Store.ui.loadedEnd = total;
   ensureGlobalMeta()
 
   const foldCover = Mutate.buildFoldCover(n, start);
@@ -187,7 +166,6 @@ export function renderEntries() {
   box.innerHTML = h;
 
   resetImgObserver();
-  armLoadEarlier(n);
 
   if (flashId) {
     requestAnimationFrame(() => {              // ← 等布局稳定
@@ -208,7 +186,113 @@ export function renderEntries() {
   hydrateImages();
   renderPins();
   rebuildPinRowMap();
-  scheduleIdleLoad(n);    // ★ 新增 —— 初始 80 条渲染完成后，空闲预加载 40 条
+
+  /* 等切话题的 scrollTop 恢复先落下去，再挂“向上加载”哨兵；
+     否则哨兵在旧位置先触发 loadEarlier，会把用户往回带。 */
+  setTimeout(() => {
+    if (Store.ui.selectedId !== n.id) return;
+    if (document.getElementById('loadEarlier')) armLoadEarlier(n);
+  }, 0);
+}
+
+/**
+ * 定位用的快速下标查找：entries 按 createdAt 升序，
+ * 先用 Store.entry 拿到目标的时间，再二分；O(log N) 而不是 O(N)。
+ */
+function findEntryIndexFast(n, targetId) {
+  const hit = Store.entry(targetId);
+  if (!hit || hit.node !== n || !n.entries.length) return -1;
+  const list = n.entries;
+  const ms = hit.e.createdAt;
+  let lo = 0, hi = list.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (list[mid].createdAt < ms) lo = mid + 1;
+    else hi = mid;
+  }
+  if (list[lo] && list[lo].id === targetId) return lo;
+  /* 同毫秒/异常排序时做一次邻域校正，再退回线性兜底 */
+  for (let i = Math.max(0, lo - 2); i < Math.min(list.length, lo + 3); i++) {
+    if (list[i].id === targetId) return i;
+  }
+  return list.findIndex(e => e.id === targetId);
+}
+
+/**
+ * 直接定位：只渲染 target 前后各 10 条。
+ * 不挂"回到最新"横幅；上下各挂一个普通加载哨兵，
+ * 向上继续 loadEarlier，向下继续 loadLater，保持正常滚动。
+ */
+function renderEntriesAround(n, targetId) {
+  const box = $('#entries');
+  if (!n || !box) { renderEntries(); return; }
+
+  const total = n.entries.length;
+  const target = findEntryIndexFast(n, targetId);
+  if (target < 0) {
+    toast('找不到那条记录');
+    renderEntries();
+    return;
+  }
+
+  const B = 10;
+  const start = Math.max(0, target - B);
+  const end = Math.min(total, target + B + 1);
+
+  setDirectWindow(true);
+  Store.ui.loadedStart = start;
+  Store.ui.loadedEnd = end;
+  ensureGlobalMeta();
+  clearEarlierObs();
+  clearLaterObs();
+
+  let h = '';
+  let lastDay = start > 0 ? dayKey(n.entries[start - 1].createdAt) : '', idx = 0;
+  for (let i = start; i < end; i++) {
+    const e = n.entries[i];
+    const dk = dayKey(e.createdAt);
+    const showDay = dk !== lastDay;
+    if (showDay) lastDay = dk;
+    h += entryBlockHTML(e, idx, n, showDay, null);
+    idx++;
+  }
+
+  let head = '';
+  if (start > 0) {
+    head = '<div class="load-earlier" id="loadEarlier">向上滚动加载更早的记录 · 还有 ' +
+      start + ' 条</div>';
+  }
+  let tail = '';
+  if (end < total) {
+    tail = '<div class="load-earlier" id="loadLater">向下滚动加载更新的记录 · 还有 ' +
+      (total - end) + ' 条</div>';
+  }
+
+  box.className = '';
+  box.innerHTML = head + h + tail;
+  resetImgObserver();
+  hydrateImages(box);
+  renderPins();
+  rebuildPinRowMap();
+  updateScrollBtn();
+
+  requestAnimationFrame(() => {
+    const el = box.querySelector('[data-eid="' + targetId + '"]');
+    if (!el) return;
+    scrollIntoViewIn($('#entriesScroll'), el, {
+      align: 'top',
+      offset: 20,
+      smooth: false,
+    });
+    flashEl(el);
+
+    /* ★ 先定位，再挂分页哨兵。
+       否则目标窗口的顶部哨兵一开始就在视口里，IntersectionObserver
+       会立刻 loadEarlier，插入旧记录后再纠正滚动 —— 看起来就是
+       “定位后突然往下跳”。 */
+    if (document.getElementById('loadEarlier')) armLoadEarlier(n);
+    if (document.getElementById('loadLater')) armLoadLater(n);
+  });
 }
 
 export function updateTopCount() {
@@ -222,9 +306,17 @@ export function appendEntry(n, e) {
      不要再清 null —— 清了就丢增量更新的入口。 */
   ensureGlobalMeta();
   addGlobalMetaFor(e);
+  const wasWindow = isDirectWindow();
   const box = $('#entries');
-  if (Store.ui.merged || !box.querySelector('.entry-row')) {
+  if (Store.ui.merged || wasWindow || !box.querySelector('.entry-row')) {
     renderEntries();
+    if (wasWindow) {
+      const s = $('#entriesScroll');
+      const sid = n.id;
+      [0, 60, 180, 400].forEach(t => setTimeout(() => {
+        if (Store.ui.selectedId === sid) scrollToBottom(s, false);
+      }, t));
+    }
     clearLastAdded();
     return;
   }
@@ -235,11 +327,15 @@ export function appendEntry(n, e) {
   const newRow = box.lastElementChild;
   hydrateImages(newRow);
   refreshMetaForRefs(e);
+  Store.ui.loadedEnd = n.entries.length;
 
   const s = $('#entriesScroll');
   scrollToBottom(s, false);
   clearLastAdded();
-  [60, 180, 400].forEach(t => setTimeout(() => scrollToBottom(s, false), t));
+  const sid = n.id;
+  [60, 180, 400].forEach(t => setTimeout(() => {
+    if (Store.ui.selectedId === sid) scrollToBottom(s, false);
+  }, t));
   updateScrollBtn();
   rebuildPinRowMap();
 }
@@ -282,44 +378,6 @@ function replaceRow(eid, n) {
 
 
 
-/* ============================================================
- * 置顶条 + 置顶页
- * ============================================================ */
-
-export function renderPins() {
-  const bar = $('#pinBar');
-  if (Store.ui.merged) { bar.innerHTML = ''; bar.style.display = 'none'; return; }
-
-  const n = findNode(Store.ui.selectedId);
-  const list = n ? Mutate.pinnedEntries(n) : [];
-
-  if (!list.length) {
-    _lastPinSig = null;
-    bar.innerHTML = ''; bar.style.display = 'none';
-    return;
-  }
-
-  // ★ 列表签名变了 → 用户视角下的"置顶集合"变了，pinCursor 作废
-  const sig = list.map(e => e.id).join('\u0000');
-  if (sig !== _lastPinSig) {
-    _lastPinSig = sig;
-    Store.ui.pinCursor = null;
-  }
-  let idx = (Store.ui.pinCursor != null && Store.ui.pinCursor >= 0 && Store.ui.pinCursor < list.length)
-    ? Store.ui.pinCursor : list.length - 1;
-  const e = list[idx];
-  const prev = e.text.replace(/!\[[^\]]*\]\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim() || '[图片]';
-
-  bar.innerHTML =
-    '<button class="pin-chip" data-loc="' + e.id + '" data-pin-idx="' + idx + '" title="点击定位">' +
-      '<span class="p-ic">' + I.pin + '</span>' +
-      '<span class="t">' + esc(prev.slice(0, 60)) + '</span>' +
-    '</button>' +
-    (list.length > 1 ? '<span class="pin-sep">丨</span><button class="pin-cnt">共 ' + countLabel(list.length) + ' 条</button>' : '') +
-    '<button class="pin-more" title="查看全部置顶">' + I.menu + '<span>全部置顶</span></button>';
-  bar.style.display = 'flex';
-}
-
 /* 全屏界面里 .pp-card 的右键 —— 只读菜单（复制类操作） */
 document.addEventListener('contextmenu',e=>{
     if(e.defaultPrevented)return;                    /* 主区 / 树已经处理过 */
@@ -333,239 +391,13 @@ document.addEventListener('contextmenu',e=>{
   });
   
 
-export function toggleEntryPin(n, e) {
-  if (!n || !e) return;
-  const nowPinned = Mutate.togglePin(n, e);
-  toast(nowPinned ? '已置顶，右栏顶部可查看' : '已取消置顶');
-  enqueue(() => writePins(n));
-  renderPins();
-  refreshRowMetaFor(e, n);
-}
-
-function syncPinCursorFromScroll() {
-  if (Store.ui.merged) return;
-  if (Date.now() < suppressPinSyncUntil) return;
-  const n = findNode(Store.ui.selectedId);
-  if (!n) return;
-  const list = Mutate.pinnedEntries(n);
-  if (!list.length) return;
-
-  const sc = $('#entriesScroll');
-  if (!sc) return;
-  const scRect = sc.getBoundingClientRect();
-  const refY = scRect.bottom - 4;   // 底部基准线：稍微往上一点
-
-  let best = -1, bestTop = -Infinity;   // 最近滚过基准线的置顶
-  let firstVisible = -1;                // 全都还在下方时，取最上面那条
-
-  for (let i = 0; i < list.length; i++) {
-    const row = pinRowMap.get(list[i].id);
-    if (!row || !row.isConnected) continue;          // ★ 直接查表，带 isConnected 兜底       // 那条被分页截断了，跳过
-    const top = row.getBoundingClientRect().top;
-    if (top <= refY) {
-      if (top > bestTop) { bestTop = top; best = i; }
-    } else if (firstVisible < 0) {
-      firstVisible = i;
-    }
-  }
-
-  const next = best >= 0
-    ? best
-    : (firstVisible >= 0 ? firstVisible : list.length - 1);
-
-  if (Store.ui.pinCursor !== next) {
-    Store.ui.pinCursor = next;
-    renderPins();                       // 只在真正变化时重绘
-  }
-}
-
-
-/* ============================================================
- * 滚动按钮：底部回底 / 顶部对齐
- * ============================================================ */
-
-/**
- * 找当前"跨过视口顶部"的第一个可见块。
- * 返回 { el, cut } —— cut=true 表示它被切了（顶部在视口之上）。
- * day-chip 也算（它是内容的一部分，被切一半也该对齐）。
- */
-function topCutItem() {
-  const sc = $('#entriesScroll'), box = $('#entries');
-  if (!sc || !box) return null;
-  const viewTop = sc.getBoundingClientRect().top;
-  for (const el of box.children) {
-    if (!el.classList.contains('entry-row') &&
-        !el.classList.contains('day-chip')) continue;
-    const r = el.getBoundingClientRect();
-    if (r.bottom > viewTop + 2) {
-      return { el, cut: r.top < viewTop - 2 };
-    }
-  }
-  return null;
-}
-
-/**
- * 把当前顶部那条滚到完全贴齐顶部。
- * 已经贴齐 → 什么都不做。
- */
-function scrollToCurrentTop() {
-  const sc = $('#entriesScroll'), box = $('#entries');
-  const t = topCutItem();
-  if (!sc || !box || !t) return;
-  const padTop = parseFloat(getComputedStyle(box).paddingTop) || 0;
-  scrollIntoViewIn(sc, t.el, { align: 'top', offset: padTop });
-}
-
-export function updateScrollBtn() {
-  const s = $('#entriesScroll');
-  if (!s) return;
-
-  const dist = s.scrollHeight - s.scrollTop - s.clientHeight;
-
-  /* 到底按钮：离底部 > 200px 显示 */
-  const bottomBtn = $('#scrollBottomBtn');
-  if (bottomBtn) bottomBtn.classList.toggle('on', dist > 200);
-
-  /* 到顶按钮：顶部那条被切断才显示 */
-  const topBtn = $('#scrollTopBtn');
-  if (topBtn) {
-    if (s.scrollTop < 100) { topBtn.classList.remove('on'); return; }
-    const t = topCutItem();
-    topBtn.classList.toggle('on', !!(t && t.cut));
-  }
-}
 /* ============================================================
  * 事件绑定
  * ============================================================ */
 
-/* #entries 上的所有交互：折叠、多选、图片灯箱、工具按钮 */
-$('#entries').addEventListener('click', e => {
-  /* 已有多选、但这次点击不是"多选点击" → 先清掉选中 */
-  if (Store.ui.multiSelect.size) {
-    const mrow = e.target.closest('.entry-row');
-    const isMultiClick = mrow
-      && (e.ctrlKey || e.metaKey || e.shiftKey)
-      && !e.target.closest('[data-eact]')     // 工具按钮（编辑/置顶/移动/删除）
-      && !e.target.closest('.md-ref')         // 内部引用
-      && !e.target.closest('.md-tag')         // #标签
-      && !e.target.closest('img.eimg');       // 图片（走灯箱）
-    if (!isMultiClick) clearMultiSelect();
-  }
-  const badge = e.target.closest('.reply-badge');
-  if (badge) {
-    const sc = $('#entriesScroll');
-    const target = document.querySelector('#entries .entry-row[data-eid="' + badge.dataset.replyTo + '"]');
-    if (target) {
-      scrollIntoViewIn(sc, target, { align: 'center' });
-      flashEl(target);
-    } else {
-      const cur = findNode(Store.ui.selectedId);
-      if (cur) jumpToRow(cur, badge.dataset.replyTo);
-    }
-    return;
-  }
-  /* 关联徽章 → 跳到第一条关联消息 */
-  const relBadge = e.target.closest('.relevance-badge');
-  if (relBadge) {
-    const sc = $('#entriesScroll');
-    const target = document.querySelector('#entries .entry-row[data-eid="' + relBadge.dataset.relevTo + '"]');
-    if (target) {
-      scrollIntoViewIn(sc, target, { align: 'center' });
-      flashEl(target);
-    } else {
-      const cur = findNode(Store.ui.selectedId);
-      if (cur) jumpToRow(cur, relBadge.dataset.relevTo);
-    }
-    return;
-  }
+/* #entries 上的所有交互统一转给 entries-ops 的路由 */
+$('#entries').addEventListener('click', e => handleEntriesClick(e));
 
-
-  /* 镜像徽章 → 跳到第一处镜像（可能跨话题） */
-const mirrorBadge = e.target.closest('.mirror-badge');
-if (mirrorBadge) {
-  const targetId = mirrorBadge.dataset.mirrorOf;
-  const sc = $('#entriesScroll');
-
-  /* 1. 目标已在当前 DOM 里 → 直接定位 */
-  const target = document.querySelector(
-    '#entries .entry-row[data-eid="' + targetId + '"]'
-  );
-  if (target) {
-    scrollIntoViewIn(sc, target, { align: 'center' });
-    flashEl(target);
-    return;
-  }
-
-  /* 2. 不在 DOM 里 → 从全局索引判断目标属于哪个 node */
-  const hit = findEntry(targetId);           // Store.entry(id) → { e, node }
-  if (!hit) { toast('找不到那条记录'); return; }
-
-  if (hit.node.id !== Store.ui.selectedId) {
-    /* 跨话题：设好 flashEntry 再切 */
-    Store.ui.flashEntry = targetId;
-    select(hit.node.id, { noScrollRestore: true });
-  } else {
-    /* 同话题但被分页 / 折叠截断 —— 交给 jumpToRow 处理 */
-    jumpToRow(hit.node, targetId);
-  }
-  return;
-}
-
-  const tog = e.target.closest('.fold-toggle');
-  if (tog) {
-    const key = tog.dataset.fold;
-    if (Store.ui.expandedFolds.has(key)) Store.ui.expandedFolds.delete(key);
-    else Store.ui.expandedFolds.add(key);
-    renderEntries();
-    return;
-  }
-  const cxl = e.target.closest('.fold-cancel');
-  if (cxl) {
-    const key = cxl.dataset.fold;
-    const [from, to] = key.split('|').map(Number);
-    const n0 = findNode(Store.ui.selectedId);
-    if (n0) {
-      Mutate.removeFold(n0, from, to);
-      enqueue(() => writeFolds(n0));
-      Store.ui.expandedFolds.delete(key);
-      renderEntries();
-      toast('已取消折叠');
-    }
-    return;
-  }
-  const row0 = e.target.closest('.entry-row');
-  if (row0 && (e.ctrlKey || e.metaKey || e.shiftKey)
-      && !e.target.closest('[data-eact]')
-      && !e.target.closest('.md-ref') && !e.target.closest('.md-tag')
-      && !e.target.closest('img.eimg')) {
-    e.preventDefault(); e.stopPropagation();
-    handleMultiClick(row0.dataset.eid, e.shiftKey);
-    return;
-  }
-  const im = e.target.closest('img.eimg.ok');
-  if (im) {
-    const row = im.closest('.entry-row');
-    const hit = row ? findEntry(row.dataset.eid) : null;
-    if (hit) openTopicLightbox(hit.node, hit.e, im.dataset.path);
-    return;
-  }
-
-  const btn = e.target.closest('[data-eact]'); if (!btn) return;
-  const row = e.target.closest('[data-eid]'); const eid = row.dataset.eid;
-  const hit = findEntry(eid); if (!hit) return;
-  const n = hit.node, ent = hit.e;
-  const act = btn.dataset.eact;
-
-  if (act === 'edit') {
-    startEdit(eid, n);
-  } else if (act === 'del') {
-    enterDelConfirm(eid, n);
-  } else if (act === 'moveEntry') {
-    moveEntryTo(ent, n);
-  } else if (act === 'pin') {
-    toggleEntryPin(n, ent);
-  }
-});
 
 $('#entries').addEventListener('contextmenu', e => {
   if (Store.ui.editingEntry) return;
@@ -593,7 +425,7 @@ $('#entries').addEventListener('dblclick', e => {
 
 $('#entriesScroll').addEventListener('scroll', () => {
   if (Store.ui.selectedId && !Store.ui.merged) {
-    Store.scrollMemo.set(Store.ui.selectedId, $('#entriesScroll').scrollTop);
+    rememberScroll(Store.ui.selectedId, $('#entriesScroll').scrollTop);
   }
   if (dateJumpRaf) return;
   dateJumpRaf = requestAnimationFrame(() => {
@@ -604,44 +436,9 @@ $('#entriesScroll').addEventListener('scroll', () => {
   });
 }, { passive: true });
 
-$('#scrollBottomBtn').addEventListener('click', () => {
-  scrollToBottom($('#entriesScroll'), true);
-});
-/* ★ 新增 */
-$('#scrollTopBtn').addEventListener('click', scrollToCurrentTop);
-
-
 $('#multiBar').addEventListener('click', e => {
   if (e.target.closest('.mb-fold')) { doFold(); return; }
   if (e.target.closest('.mb-cancel')) { clearMultiSelect(); return; }
-});
-
-$('#pinBar').addEventListener('click', e => {
-  const loc = e.target.closest('[data-loc]');
-  if (loc) {
-    /* 1. 先把 cursor 钉到被点击的这条，并重绘 chip */
-    const idx = +loc.dataset.pinIdx;
-    if (!isNaN(idx) && Store.ui.pinCursor !== idx) {
-      Store.ui.pinCursor = idx;
-      renderPins();
-    }
-
-    /* 2. 平滑滚动期间屏蔽联动，避免“滚到中央 → 联动改成上一条” */
-    suppressPinSyncUntil = Date.now() + 900;
-
-    /* 3. 定位 + 闪烁 */
-    const el = document.querySelector('#entries .entry-row[data-eid="' + loc.dataset.loc + '"]');
-    if (el) {
-      scrollIntoViewIn($('#entriesScroll'), el, { align: 'center' });
-      flashEl(el);
-    } else {
-      const n = findNode(Store.ui.selectedId);
-      if (n) jumpToRow(n, loc.dataset.loc);
-    }
-    return;
-  }
-  if (e.target.closest('.pin-more')) D.openPinPage();
-  if (e.target.closest('.pin-cnt'))  D.openPinPage();
 });
 
 
@@ -660,5 +457,6 @@ wireOps({
   setReply:  (...a) => D.setReply(...a),   // 转发 composer 注入
   setRelevance: (...a) => D.setRelevance(...a),   // ★
   renderAll: (...a) => D.renderAll(...a),  // 转发 app 注入
+  select: (...a) => D.select(...a),
 });
-wireEntriesJump({ renderEntries });
+wireEntriesJump({ renderEntries, showAround: renderEntriesAround });

@@ -26,7 +26,8 @@ import { scanDir } from './loader.js';
 import { enqueue } from './writer.js';
 import { toast, openMovePicker, confirmDialog, openFullPage } from './ui.js';
 import { walk, findByPath, findNode } from './tree-utils.js';
-import { renderEntries, updateTopCount, renderPins } from './entries.js';
+import { renderEntries, updateTopCount } from './entries.js';
+import { renderPins } from './pins.js';
 
 /* ---------- 依赖注入 ---------- */
 let D = { renderAll: () => {} };

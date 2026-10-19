@@ -32,6 +32,8 @@ import assert from 'node:assert/strict';
     querySelector: sel => (sel === '#toastRoot' || sel === '#modalRoot' ? fakeEl() : null),
     createElement: () => fakeEl(),
     body: fakeEl(),
+    addEventListener() {},
+    removeEventListener() {},
   };
 const { Store } = await import('../store.js');
 const { enqueue, setStatus, markFsReady } = await import('../writer.js');

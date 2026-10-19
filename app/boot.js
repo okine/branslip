@@ -23,9 +23,9 @@ import { findNode, findByPath, pOf, stats } from './tree-utils.js';
 import { recoverTempFiles } from './writeSecurity.js';
 import { scanChildren } from './loader.js';
 import { setStatus, markFsReady } from './writer.js';
+import { clearRuntimeCaches } from './cacheClear.js';
 import { select } from './tree.js';
 import { setDialogueEnabled } from './entries-render.js';
-import { clearURLCache, clearPendingForNode } from './image.js';
 import { initTheme, theme } from './theme.js';
 import { toast } from './ui.js';
 
@@ -110,7 +110,7 @@ export async function connect(h) {
 
     Store.root.children = await scanChildren(h);
     Store.rebuildIndex();
-    clearURLCache();
+    clearRuntimeCaches();
     Store.resetMetaBuilt();
 
     Store.ui.viewHistory = [];
@@ -145,14 +145,11 @@ export async function connect(h) {
   try { await idbSet('dir', h); } catch (e) {}
   Store.root.children = await scanChildren(h);
   Store.rebuildIndex();
-  clearURLCache();
+  clearRuntimeCaches();
   Store.resetMetaBuilt();
 
   Store.ui.viewHistory = [];
   Store.ui.drafts.clear();
-  for (const n of Store.nodes()) {
-    if (n.id !== '__root__') clearPendingForNode(n.id);
-  }
   Store.ui.viewCursor = -1;
   history.replaceState({ root: true }, '');
 

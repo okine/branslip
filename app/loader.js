@@ -54,6 +54,7 @@ export async function scanDir(dir, name) {
   node.source   = null;
   node.sourceId = null;
   node.intro    = '';
+  node.scroll   = null;
   try {
     const raw = await Storage.readText(dir, '_话题.json');
     const meta = JSON.parse(raw) || {};
@@ -61,6 +62,9 @@ export async function scanDir(dir, name) {
     node.source   = meta.source   || null;    // ★
     node.sourceId = meta.sourceId || null;    // ★
     node.intro    = typeof meta.intro === 'string' ? meta.intro : '';
+    if (meta.scroll && Number.isFinite(meta.scroll.top)) {
+      node.scroll = { top: meta.scroll.top };
+    }
   } catch (e) {}
 
   const items = await Storage.listEntries(dir);
