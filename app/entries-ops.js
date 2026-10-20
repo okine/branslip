@@ -29,11 +29,12 @@ import {
   copyAttachment, TRASH_MAX,
 } from './io.js';
 import { enqueue } from './writer.js';
-import { pathOf } from './tree-utils.js';
+import { pathTitles } from './tree-utils.js';
 import { scrollIntoViewIn, flashEl } from './scroll-utils.js';
 import { openTopicLightbox } from './image.js';
 import { jumpToRow } from './entries-jump.js';
-import { toast, openMovePicker, confirmDialog,pushEsc, promptInput } from './ui.js';
+import { toast, confirmDialog,pushEsc, promptInput } from './ui.js';
+import { openMovePicker } from './ui-topicPicker.js';
 import { diffGlobalMetaFor, removeGlobalMetaFor, addGlobalMetaFor,refreshAllRowMeta,
   scanEntryRefs } from './meta-row.js';
 
@@ -44,7 +45,6 @@ let D = {
   removeEntryRow: () => {},
   updateTopCount: () => {},
  
-  setMetaCounts:  () => {},   // ★
   renderPins:     () => {},
   toggleEntryPin: () => {},
   select:         () => {},
@@ -162,6 +162,7 @@ export function changeEntryText(node, entryId, applyFn) {
     if (p.t && p.t.trim()) invalidateMDCache(p.t);
   }
   diffGlobalMetaFor(result.entry, oldText, result.entry.text);
+  Store.touchData();
   enqueue(() => persistMonthOf(node, result.entry.createdAt));
 
   return result;
@@ -223,7 +224,7 @@ export function bindEdit(eid) {
   let settled = false;
 
   /* 只替换这一行退出编辑态。
-     不能整页 D.renderEntries()：那会把 loadedStart 重置到最后 PAGE_SIZE，
+     不能整页 D.renderEntries()：那会把 loadedStart 重置到最后 PAGING.initial，
      很久以前的消息（已经向上加载出来）会消失，滚动位置也会被夹回去。 */
   const exitEditing = () => {
     Store.ui.editingEntry = null;
@@ -350,7 +351,7 @@ export function executeDelete(eid, n, ent) {
     originalMs: ent.createdAt,
     originalStamp: fmtStamp(ent.createdAt),
     deletedAt: fmtStamp(Date.now()),
-    fromTopic: pathOf(n).map(x => x.title).join('/'),
+    fromTopic: pathTitles(n, '/'),
     fromTopicId: n.topicId || null,
     pinned: wasPinned,
   };

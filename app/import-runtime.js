@@ -27,14 +27,14 @@
 import { Storage } from './storage.js';
 import { uid } from './utils.js';
 import {
-  fmtStamp, fmtStampAtTz, monthKey, monthFileName,
-  escapeEntryBody,
+  fmtStamp, fmtStampAtTz, monthKey,
   stampForWrite, entryBlockId, localIdFromMs,
 } from './format.js';
-import { sanitizeName, uniqueName, resolveFile, dirOf, writeOrder } from './io.js';
+import { sanitizeName, uniqueName, resolveFile, dirOf, writeOrder, writeMonthFile } from './io.js';
 import { atomicWriteText } from './writeSecurity.js';
 import { Store } from './store.js';
-import { findNode, pathOf } from './tree-utils.js';
+import { findNode, pathTitles } from './tree-utils.js';
+import { resetMeta } from './meta-row.js';
 
 /* ============================================================
  * 中间表示（IR）—— adapter 与 runtime 的契约
@@ -505,21 +505,13 @@ async function writeTopic(parentDir, topic, source, opts, onImage) {
     }
   }
 
-  const byMonth = new Map();
-  for (const e of topic.entries) {
-    const mk = monthKey(e.createdAt);
-    if (!byMonth.has(mk)) byMonth.set(mk, []);
-    byMonth.get(mk).push(e);
-  }
-
-  for (const [mk, list] of byMonth) {
-    let md = '# ' + safeTitle + ' · ' + mk + '\n';
-    for (const e of list) {
-      const body = escapeEntryBody(e.text);
-      md += '\n## ' + stampForWrite(e) + '\n\n' + body + '\n';
-    }
-    await atomicWriteText(dir, monthFileName(mk), md);
-  }
+  const node = {
+    title: safeTitle,
+    _dir: dir,
+    entries: topic.entries,
+  };
+  const months = new Set(topic.entries.map(e => monthKey(e.createdAt)));
+  for (const mk of months) await writeMonthFile(node, mk);
 
   const topicCreatedAt = fmtStamp(topic.createdAtMs);
   await atomicWriteText(dir, '_话题.json', JSON.stringify({
@@ -747,7 +739,7 @@ export async function writeImportFailureReport(parent, err, meta, deps) {
   }
   const now = Date.now();
   const name = '_导入失败-' + localIdFromMs(now) + '.md';
-  const parentPath = pathOf(parent).map(x => x.title).filter(Boolean).join(' / ') || '根目录';
+  const parentPath = pathTitles(parent) || '根目录';
   const detail = String((err && err.stack) || (err && err.message) || err || '未知错误')
     .replace(/```/g, "'''");
   const body = [
@@ -783,6 +775,7 @@ export async function runImportFile(file, deps) {
   const renderAll = deps.renderAll || (() => {});
   const select = deps.select || (() => {});
   const ui = await import('./ui.js');
+  const { openMovePicker } = await import('./ui-topicPicker.js');
   const { enqueue } = await import('./writer.js');
   const text = await file.text();
 
@@ -811,7 +804,7 @@ export async function runImportFile(file, deps) {
     ? '把「' + conversations[0].title + '」导入到哪个话题下？'
     : '把 ' + conversations.length + ' 个对话导入到哪个话题下？';
 
-  ui.openMovePicker(hint, [], async (parentId) => {
+  openMovePicker(hint, [], async (parentId) => {
     const parent = findNode(parentId);
     if (!parent) { ui.toast('找不到目标话题'); return; }
     try {
@@ -820,7 +813,7 @@ export async function runImportFile(file, deps) {
         const created = await importFn(dirOf(parent), conversations, report, { photoDir });
         for (const n of created) { parent.children.push(n); nodes.push(n); }
         Store.rebuildIndex();
-        Store.resetMetaBuilt();
+        resetMeta();
         await writeOrder(parent);
       });
       if (!r.ok) throw (r.err || new Error('磁盘写入失败'));

@@ -24,6 +24,7 @@ import { recoverTempFiles } from './writeSecurity.js';
 import { scanChildren } from './loader.js';
 import { setStatus, markFsReady } from './writer.js';
 import { clearRuntimeCaches } from './cacheClear.js';
+import { resetMeta } from './meta-row.js';
 import { select } from './tree.js';
 import { setDialogueEnabled } from './entries-render.js';
 import { initTheme, theme } from './theme.js';
@@ -111,7 +112,7 @@ export async function connect(h) {
     Store.root.children = await scanChildren(h);
     Store.rebuildIndex();
     clearRuntimeCaches();
-    Store.resetMetaBuilt();
+    resetMeta();
 
     Store.ui.viewHistory = [];
     Store.ui.drafts.clear();
@@ -146,7 +147,7 @@ export async function connect(h) {
   Store.root.children = await scanChildren(h);
   Store.rebuildIndex();
   clearRuntimeCaches();
-  Store.resetMetaBuilt();
+  resetMeta();
 
   Store.ui.viewHistory = [];
   Store.ui.drafts.clear();

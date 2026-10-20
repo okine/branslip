@@ -12,6 +12,7 @@
 
 import { esc } from './utils.js';
 import { fmtStamp } from './format.js';
+import { stripImages } from './md.js';
 import { Mutate } from './mutate.js';
 import { findTopicByRefId, findByPath } from './tree-utils.js';
 
@@ -41,7 +42,7 @@ function showRefPreview(ref) {
 
   let html;
   if (entry) {
-    const preview = entry.text.replace(/!\[[^\]]*\]\([^)]*\)/g, '[图]').slice(0, 240);
+    const preview = (stripImages(entry.text).trim() || '[图]').slice(0, 240);
     html = '<div class="ref-preview-head">' + esc(node.title) + '</div>' +
            '<div class="ref-preview-time">' + fmtStamp(entry.createdAt) + '</div>' +
            '<div class="ref-preview-body">' + esc(preview) + '</div>';

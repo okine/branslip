@@ -17,7 +17,7 @@
  * renderEntries —— 避免 entries.js ↔ entries-jump.js 反向 import。
  */
 
-import { $ } from './utils.js';
+import { $, PAGING } from './utils.js';
 import { Store } from './store.js';
 import { Mutate } from './mutate.js';
 import { dayKey, fmtStamp } from './format.js';
@@ -37,7 +37,6 @@ let D = { renderEntries: () => {} };
 export function wireEntriesJump(h) { Object.assign(D, h); }
 
 /* ---------- 常量 / 模块状态 ---------- */
-const CHUNK_SIZE = 40;
 const IDLE_LOAD_COOLDOWN = 500;
 
 /* “目标前后 10 条”直接定位窗口是否开启 */
@@ -219,7 +218,7 @@ export function loadEarlier(n) {
     const sentinel = $('#loadEarlier');
     if (!sentinel) return;
     const end = Store.ui.loadedStart;
-    const start = Math.max(0, end - CHUNK_SIZE);
+    const start = Math.max(0, end - PAGING.chunk);
     if (end === start) return;
 
     const oldH = sc.scrollHeight;
@@ -275,7 +274,7 @@ export function loadLater(n) {
     const total = n.entries.length;
     if (start >= total) { sentinel.remove(); return; }
 
-    const end = Math.min(total, start + CHUNK_SIZE);
+    const end = Math.min(total, start + PAGING.chunk);
     const anchor = captureScrollAnchor(sc, box);
     ensureGlobalMeta();
 

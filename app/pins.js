@@ -18,13 +18,14 @@ import { I } from './icons.js';
 import { Store } from './store.js';
 import { Mutate } from './mutate.js';
 import { fmtStamp } from './format.js';
+import { stripImages } from './md.js';
 import { writePins } from './io.js';
 import { enqueue } from './writer.js';
 import { toast, openFullPage } from './ui.js';
 import { replaceMetaRow } from './meta-row.js';
 import { renderEntryBody } from './entries-render.js';
 import { hydrateIn } from './image.js';
-import { scrollIntoViewIn, flashEl } from './scroll-utils.js';
+import { scrollIntoViewIn, flashEl, captureViewportAnchor, restoreViewportAnchor } from './scroll-utils.js';
 import { jumpToRow } from './entries-jump.js';
 import { findNode } from './tree-utils.js';
 
@@ -65,7 +66,7 @@ export function renderPins() {
   const idx = (Store.ui.pinCursor != null && Store.ui.pinCursor >= 0 && Store.ui.pinCursor < list.length)
     ? Store.ui.pinCursor : list.length - 1;
   const e = list[idx];
-  const prev = e.text.replace(/!\[[^\]]*\]\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim() || '[图片]';
+  const prev = stripImages(e.text).replace(/\s+/g, ' ').trim() || '[图片]';
 
   bar.innerHTML =
     '<button class="pin-chip" data-loc="' + e.id + '" data-pin-idx="' + idx + '" title="点击定位">' +
@@ -81,6 +82,14 @@ export function renderPins() {
 
 export function toggleEntryPin(n, e) {
   if (!n || !e) return;
+
+  /* 置顶条从 0 → 显示 / 显示 → 0 会改变 #entriesScroll 的高度，
+     浏览器保持 scrollTop 不变，视觉上就是内容轻轻跳一下。
+     先记住当前可见行，改完置顶条后把它放回原位置。 */
+  const sc = $('#entriesScroll');
+  const box = $('#entries');
+  const anchor = captureViewportAnchor(box);
+
   const nowPinned = Mutate.togglePin(n, e);
   toast(nowPinned ? '已置顶，右栏顶部可查看' : '已取消置顶');
   enqueue(() => writePins(n));
@@ -88,6 +97,7 @@ export function toggleEntryPin(n, e) {
   const row = document.querySelector('#entries .entry-row[data-eid="' + e.id + '"]');
   if (row) replaceMetaRow(row, e, n);
   renderPins();
+  restoreViewportAnchor(sc, anchor);
 }
 
 export function syncPinCursorFromScroll() {

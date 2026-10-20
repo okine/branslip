@@ -39,3 +39,13 @@ export function countLabel(n) {
   if (!Number.isFinite(v) || v <= 0) return '0';
   return v > 999 ? '999+' : String(Math.floor(v));
 }
+
+/* 列表分页的统一基准值。需要调整时只改这里；
+   各模块按用途读取，不再各自写 40 / 80 / 120。 */
+export const PAGING = {
+  initial: 80,        // 单话题首屏
+  chunk: 40,          // 单话题向上/向下每次加载
+  mergedInitial: 120, // 时间流首屏
+  mergedChunk: 40,    // 时间流每次加载
+  around: 10,         // 直接定位目标前后各几条
+};

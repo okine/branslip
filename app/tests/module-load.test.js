@@ -35,6 +35,7 @@ const MODULES = [
   'calendar.js',
   'timeline.js',
   'ui.js',
+  'ui-topicPicker.js',
   'storage.js',
   'io.js',
   'writer.js',
@@ -45,6 +46,7 @@ const MODULES = [
   'entries-ops.js',
   'entries-merge.js',
   'tree-render.js',
+  'search.js',
   'tree-ops.js',
   'tree.js',
   'composer.js',
@@ -94,8 +96,9 @@ const REQUIRED_EXPORTS = {
   'writeSecurity.js': ['atomicWriteText', 'recoverTempFiles', 'TMP_TRAILER'],
   'tree-ops.js': ['addNode', 'renameNode', 'moveNode', 'deleteNode',
                   'confirmDeleteTopic', 'wireTreeOps'],
-  'tree-render.js': ['renderTree', 'renderSearch', 'branchHTML', 'syncScopeBtn',
-                     'bindTreeRender'],
+  'tree-render.js': ['renderTree', 'branchHTML', 'bindTreeRender'],
+  'search.js': ['initSearch', 'runSearch', 'clearSearch', 'setQuery',
+                'parseQuery', 'highlightText'],
   'composer.js': ['setReply', 'setRelevance', 'buildEntryText', 'refreshPreview',
                   'restoreDraft', 'wireComposer'],
   'trash.js': ['openTrashPage', 'doTrashRestore', 'wireTrash'],
@@ -111,6 +114,7 @@ const REQUIRED_EXPORTS = {
   'writeSecurity.js': ['atomicWriteText', 'recoverTempFiles'],
   'ui.js': ['toast', 'openFullPage', 'openModal', 'closeModal', 'confirmDialog',
             'promptInput', 'pushEsc', 'runTopEsc', 'makeEscapable'],
+  'ui-topicPicker.js': ['openTopicPicker', 'openMovePicker'],
   'store.js': [],   // 只导出 Store 一个对象，下面单独查
 };
 

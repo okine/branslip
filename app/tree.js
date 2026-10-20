@@ -5,13 +5,12 @@
 
 'use strict';
 /* ================= tree.js =================
- * 话题树领域：增删改 + 拖拽 + 选中 + 侧栏/面包屑/搜索框交互 + 视图历史。
+ * 话题树领域：增删改 + 拖拽 + 选中 + 侧栏/面包屑 + 视图历史。
  *
  * 渲染在 tree-render.js（本模块 re-export，调用方 import 路径不变）。
  *
  * 导出：
  *   renderTree()          重绘左栏树          → tree-render.js
- *   syncScopeBtn()        同步搜索范围按钮样式 → tree-render.js
  *   select(id)            切换当前话题
  *   startCreate(parentId) 在指定父话题下开启"新建"输入框
  *   pushViewState / viewBack / goToView        视图历史栈
@@ -34,10 +33,13 @@ import {
 } from './io.js';
 import { clearPendingForNode } from './image.js';
 import { enqueue } from './writer.js';
+import { Storage } from './storage.js';
 import {
-  toast, openMenu, openMenuAt, openMovePicker,
+  toast, openMenu, openMenuAt,
   closeSide, hasModal, confirmDialog
 } from './ui.js';
+import { openMovePicker } from './ui-topicPicker.js';
+import { clearSearch } from './search.js';
 import {
   findNode, findParent,  pOf, isDesc, subtreeIds,
 } from './tree-utils.js';
@@ -48,7 +50,7 @@ import { recallScroll, flushScroll, rememberScroll } from './entries-jump.js';
 
 import * as treeRender from './tree-render.js';
 import {
-  renderTree, syncScopeBtn, bindTreeRender,
+  renderTree, bindTreeRender,
 } from './tree-render.js';
 import {
   addNode, renameNode, moveNode,  confirmDeleteTopic,
@@ -76,7 +78,6 @@ export function wireTree(h) {
 }
 
 /* ---------- 模块状态 ---------- */
-let searchTimer = null;
 
 /* ── 渲染 / 搜索 / 内联输入框 全部在 tree-render.js ──
    treeBox 也从那边导出：拖拽（hitTest / autoScroll）要用它。
@@ -131,7 +132,6 @@ export function select(id, opts) {
   Store.ui.pinCursor = null;
   setReply(null);
   setRelevance(null);
-  syncScopeBtn();
 
   /* ★ 丢掉上一个话题里没发送的图片 blob。
      草稿只存文本，图片引用不会跟着走；切回来也不是同一份输入框内容了，
@@ -179,6 +179,16 @@ export function select(id, opts) {
  * ============================================================ */
 
 
+async function openTopicFolder(n) {
+  const dir = n && n._dir;
+  if (!dir) { toast('话题目录还没准备好'); return; }
+  try {
+    await window.__TAURI__.core.invoke('open_folder', { path: dir });
+  } catch (e) {
+    toast('打开文件夹失败：' + ((e && e.message) || e));
+  }
+}
+
 function buildTopicMenuItems(n) {
   return [
     { icon: I.plus, label: '新建子话题', fn: () => startCreate(n.id) },
@@ -195,6 +205,10 @@ function buildTopicMenuItems(n) {
         }
       ),
     },
+    ...(Storage.isTauri ? [
+      { sep: true },
+      { icon: I.folder, label: '打开所在文件夹', fn: () => openTopicFolder(n) },
+    ] : []),
     { sep: true },
     {
       icon: I.trash, label: '清理未引用的图片',
@@ -220,8 +234,8 @@ function topicMenu(anchor, n) {
 export function startCreate(parentId) {
   const pn = findNode(parentId);
   if (pn && pn.id !== '__root__') Store.collapsed.delete(pOf(pn));
-  Store.ui.query = ''; $('#searchInput').value = '';
   Store.ui.creatingParent = parentId;
+  clearSearch();
   renderTree();
   const el = $('#treeScroll .create-input');
   if (el) el.scrollIntoView({ block: 'center' });
@@ -396,10 +410,6 @@ window.addEventListener('pointercancel', e => endDrag(e));
  * ============================================================ */
 
 treeBox.addEventListener('click', e => {
-  const more = e.target.closest('[data-scope-more]');
-  if (more) { Store.ui.searchShown += 100; renderTree(); return; }
-  const toAll = e.target.closest('[data-scope-all]');
-  if (toAll) { Store.ui.searchScope = 'all'; Store.ui.searchShown = 100; syncScopeBtn(); renderTree(); return; }
   const btn = e.target.closest('button');
   if (btn && btn.dataset.act) {
     const row = btn.closest('.node-row'); const id = row.dataset.id;
@@ -474,24 +484,6 @@ document.addEventListener('keydown', e => {
 
 $('#crumbs').addEventListener('click', e => {
   const c = e.target.closest('[data-crumb]'); if (c) select(c.dataset.crumb);
-});
-
-$('#searchInput').addEventListener('input', e => {
-  const v = e.target.value;
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => { Store.ui.query = v; Store.ui.searchShown = 100; renderTree(); }, 120);
-});
-$('#searchInput').addEventListener('keydown', e => {
-  if (e.key === 'Escape') {
-    clearTimeout(searchTimer);
-    e.target.value = ''; Store.ui.query = ''; renderTree();
-  }
-});
-$('#scopeBtn').addEventListener('click', () => {
-  Store.ui.searchScope = Store.ui.searchScope === 'all' ? 'topic' : 'all';
-  Store.ui.searchShown = 100;
-  syncScopeBtn();
-  renderTree();
 });
 
 $('#newRootBtn').addEventListener('click', () => startCreate('__root__'));

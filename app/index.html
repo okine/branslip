@@ -20,15 +20,15 @@
       <div><h1>时枝笺</h1><small>BRANSLIP · 本地 Markdown 记录本</small></div>
     </div>
     <div class="search-box">
-      <span id="searchIcon"></span>
-      <input id="searchInput" placeholder="搜索话题与记录…">
-      <button class="scope-btn" id="scopeBtn" title="切换搜索范围">本话题</button>
+      <button id="searchIcon" type="button" title="搜索" aria-label="搜索"></button>
+      <input id="searchInput" placeholder="输入关键词后点放大镜搜索…">
     </div>
     <div class="quick-tags">
       <button class="quick-tag" data-tag="待补完">#待补完</button>
     </div>
  
     <div id="treeScroll"></div>
+    <div id="searchPanel" hidden></div>
     <div class="side-foot">
       <button class="new-root" id="newRootBtn"></button>
       <div class="save-state">

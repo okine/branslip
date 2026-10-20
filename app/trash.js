@@ -24,7 +24,8 @@ import {
 } from './io.js';
 import { scanDir } from './loader.js';
 import { enqueue } from './writer.js';
-import { toast, openMovePicker, confirmDialog, openFullPage } from './ui.js';
+import { toast, confirmDialog, openFullPage } from './ui.js';
+import { openMovePicker } from './ui-topicPicker.js';
 import { walk, findByPath, findNode } from './tree-utils.js';
 import { renderEntries, updateTopCount } from './entries.js';
 import { renderPins } from './pins.js';

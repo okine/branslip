@@ -25,7 +25,7 @@ import { esc } from './utils.js';
 import { parseStampToMs, 
   unescapeEntryBody,topicRefIdFromStamp,entryBlockId } from './format.js';
 import { Store } from './store.js';
-import { pathOf, topicRefId, findTopicByRefId } from './tree-utils.js';
+import { pathTitles, topicRefId, findTopicByRefId } from './tree-utils.js';
 export { topicRefId, findTopicByRefId };
 
 
@@ -312,6 +312,17 @@ export function clearMDCache() {
 
 export const IMG_RE = /!\[([^\]]*)\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)/g;
 
+/* 图片语法相关的小工具：避免各处重复写 ![..](..) 正则 */
+export function hasImage(text) {
+  IMG_RE.lastIndex = 0;
+  return IMG_RE.test(String(text || ''));
+}
+
+export function stripImages(text) {
+  IMG_RE.lastIndex = 0;
+  return String(text || '').replace(IMG_RE, ' ');
+}
+
 export function splitByImage(text) {
   const parts = []; let last = 0, m;
   IMG_RE.lastIndex = 0;
@@ -382,6 +393,6 @@ export function parseEntries(text) {
 export function buildRef(node, blockId) {
   const tid = topicRefId(node);
   if (tid) return '[[~' + tid + '#^' + blockId + ']]';
-  const path = pathOf(node).map(x => x.title).join('\u001f');
+  const path = pathTitles(node, '\u001f');
   return '[[' + path + '#^' + blockId + ']]';
 }

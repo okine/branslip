@@ -42,7 +42,7 @@ export async function atomicWriteText(dir, name, text) {
    const cleanText = sanitizeUTF8(text);
   /* Tauri 分支 */
   if (Storage.isTauri) {
-    await Storage.writeText(dir, name, text);
+    await Storage.writeText(dir, name, cleanText);
     return;
   }
 

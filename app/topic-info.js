@@ -15,10 +15,10 @@
 import { esc, badgeHTML } from './utils.js';
 import { fmtStamp, parseStamp } from './format.js';
 import { IMG_RE } from './md.js';
-import { pathOf } from './tree-utils.js';
+import { pathTitles } from './tree-utils.js';
 import { updateTopicMeta } from './io.js';
 import { enqueue } from './writer.js';
-import { openFullPage, toast } from './ui.js';
+import { openFullPage, toast, confirmDialog } from './ui.js';
 import { createImageURLLoader, openTopicLightbox } from './image.js';
 
 /* ---------- 收集 ---------- */
@@ -42,8 +42,8 @@ function statHTML(label, value) {
 
 /* ---------- 渲染 ---------- */
 
-function renderDetails(node, images) {
-  const path = pathOf(node).map(x => x.title).join(' / ');
+function renderDetails(node, images, introEditing, introDraft) {
+  const path = pathTitles(node);
   const created = parseStamp(node.topicId);
   const createdText = Number.isFinite(created) ? fmtStamp(created) : '—';
 
@@ -56,6 +56,16 @@ function renderDetails(node, images) {
       '<img alt="' + esc(it.alt || '') + '">' +
     '</button>'
   ).join('');
+
+  const intro = (node.intro || '').trim();
+  const introView = intro
+    ? '<div class="topic-intro-view">' + esc(intro).replace(/\n/g, '<br>') + '</div>'
+    : '<div class="topic-intro-view empty">还没有简介</div>';
+  const introEditor =
+    '<textarea class="topic-intro" rows="4" placeholder="写一点这个话题的简介…">' +
+      esc(introDraft) +
+    '</textarea>' +
+    '<div class="topic-hint">简介保存在话题目录的 _话题.json 里</div>';
 
   return '' +
     '<div class="topic-hero">' +
@@ -74,12 +84,14 @@ function renderDetails(node, images) {
     '<div class="topic-card">' +
       '<div class="topic-card-head">' +
         '<span>简介</span>' +
-        '<button type="button" class="topic-save" data-intro-save>保存</button>' +
+        '<div class="topic-card-actions">' +
+          (introEditing
+            ? '<button type="button" class="topic-cancel" data-intro-cancel>取消</button>' +
+              '<button type="button" class="topic-save" data-intro-save>保存</button>'
+            : '<button type="button" class="topic-edit" data-intro-edit>编辑</button>') +
+        '</div>' +
       '</div>' +
-      '<textarea class="topic-intro" rows="4" placeholder="写一点这个话题的简介…">' +
-        esc(node.intro || '') +
-      '</textarea>' +
-      '<div class="topic-hint">简介保存在话题目录的 _话题.json 里</div>' +
+      (introEditing ? introEditor : introView) +
     '</div>' +
     (images.length
       ? '<div class="topic-media-head">图片 · ' + images.length + '</div>' +
@@ -109,45 +121,149 @@ export function openTopicDetails(node) {
   const loader = createImageURLLoader(node);
   let thumbIO = null;
 
+  let introEditing = false;
+  let introSaving = false;
+  let introDraft = node.intro || '';
+
+  function bindIntroEditor(api) {
+    if (!introEditing) return;
+    const ta = api.el.querySelector('.topic-intro');
+    if (!ta) return;
+
+    ta.value = introDraft;
+    ta.focus({ preventScroll: true });
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+
+    ta.addEventListener('input', () => {
+      introDraft = ta.value;
+    });
+
+    ta.addEventListener('keydown', ev => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      leaveIntro(api);
+    });
+
+    /* 点“保存”时 blur 会先发生，所以延迟到 click 之后再看：
+       如果 saveIntro 已经把 introSaving 置位，这里就不再重复弹窗。 */
+    ta.addEventListener('blur', () => {
+      setTimeout(() => {
+        if (!introEditing || introSaving) return;
+        if (!ta.isConnected) return;
+        if (api.el.querySelector('.topic-intro') !== ta) return;
+        leaveIntro(api);
+      }, 0);
+    });
+  }
+
+  function beginIntroEdit(api) {
+    if (introEditing || introSaving) return;
+    introDraft = node.intro || '';
+    introEditing = true;
+    api.redraw();
+  }
+
+  function exitIntroEdit(api) {
+    introEditing = false;
+    introDraft = node.intro || '';
+    api.redraw();
+  }
+
+  async function saveIntro(api) {
+    if (introSaving) return;
+    const ta = api.el.querySelector('.topic-intro');
+    const v = (ta ? ta.value : introDraft).trim();
+
+    /* 没有改动：直接退出编辑态，不写盘 */
+    if (v === (node.intro || '').trim()) {
+      exitIntroEdit(api);
+      return;
+    }
+
+    introSaving = true;
+    const btn = api.el.querySelector('[data-intro-save]');
+    if (btn) btn.disabled = true;
+
+    try {
+      const r = await enqueue(() => updateTopicMeta(node, { intro: v }));
+      if (!r.ok) {
+        toast('简介保存失败：' + ((r.err && r.err.message) || r.err || '未知错误'));
+        return;
+      }
+      node.intro = v;
+      introEditing = false;
+      introDraft = v;
+      api.redraw();
+      toast('简介已保存');
+    } finally {
+      introSaving = false;
+    }
+  }
+
+  async function leaveIntro(api) {
+    if (!introEditing || introSaving) return;
+    const ta = api.el.querySelector('.topic-intro');
+    const v = (ta ? ta.value : introDraft);
+
+    /* 没有更改 → 静默退出 */
+    if (v.trim() === (node.intro || '').trim()) {
+      exitIntroEdit(api);
+      return;
+    }
+
+    const ok = await confirmDialog(
+      '保存修改？',
+      '简介已被修改。要保存吗？',
+      { okText: '保存', cancelText: '放弃' }
+    );
+    if (!introEditing) return;
+    if (ok) await saveIntro(api);
+    else exitIntroEdit(api);
+  }
+
   const api = openFullPage({
     title: '话题详情',
 
-    render: () => renderDetails(node, images),
+    render: () => renderDetails(node, images, introEditing, introDraft),
 
     afterDraw: (api) => {
       if (thumbIO) { thumbIO.disconnect(); thumbIO = null; }
       const list = api.el.querySelector('.pp-list');
       const root = list || api.el;
       const thumbs = root.querySelectorAll('.ti-thumb[data-img-path]');
-      if (!thumbs.length) return;
+      if (thumbs.length) {
+        thumbIO = new IntersectionObserver(entries => {
+          for (const en of entries) {
+            if (!en.isIntersecting) continue;
+            const el = en.target;
+            if (thumbIO) thumbIO.unobserve(el);
+            loadThumb(el, loader);
+          }
+        }, { root, rootMargin: '400px 0px' });
+        for (const el of thumbs) thumbIO.observe(el);
+      }
 
-      thumbIO = new IntersectionObserver(entries => {
-        for (const en of entries) {
-          if (!en.isIntersecting) continue;
-          const el = en.target;
-          if (thumbIO) thumbIO.unobserve(el);
-          loadThumb(el, loader);
-        }
-      }, { root, rootMargin: '400px 0px' });
-      for (const el of thumbs) thumbIO.observe(el);
+      bindIntroEditor(api);
     },
 
     onEvent: async (ev, api) => {
-      /* 保存简介 */
-      const save = ev.target.closest('[data-intro-save]');
-      if (save) {
-        const ta = api.el.querySelector('.topic-intro');
-        if (!ta) return;
-        const v = ta.value.trim();
-        save.disabled = true;
-        try {
-          const r = await enqueue(() => updateTopicMeta(node, { intro: v }));
-          if (!r.ok) return;
-          node.intro = v;
-          toast('简介已保存');
-        } finally {
-          save.disabled = false;
-        }
+      /* 简介：进入编辑 */
+      if (ev.target.closest('[data-intro-edit]')) {
+        beginIntroEdit(api);
+        return;
+      }
+
+      /* 简介：取消，直接丢弃本次编辑 */
+      if (ev.target.closest('[data-intro-cancel]')) {
+        if (introSaving) return;
+        exitIntroEdit(api);
+        return;
+      }
+
+      /* 简介：保存 */
+      if (ev.target.closest('[data-intro-save]')) {
+        await saveIntro(api);
         return;
       }
 

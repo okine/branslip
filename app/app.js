@@ -28,6 +28,7 @@ import {
   rewriteAllOrders,
 } from './io.js';
 import { clearRuntimeCaches } from './cacheClear.js';
+import { resetMeta } from './meta-row.js';
 import { 
   toast, runTopEsc, confirmDialog
 } from './ui.js';
@@ -39,7 +40,8 @@ import {
 import {
   select, wireTree, viewBack, pushViewState
 } from './tree.js';
-import { renderTree, syncScopeBtn } from './tree-render.js';
+import { renderTree } from './tree-render.js';
+import { initSearch, setQuery } from './search.js';
 import {
   renderEntries, wireEntries,
 } from './entries.js';
@@ -126,6 +128,7 @@ function updateComposer() {
 
 function renderMain() { renderTop(); renderEntries(); updateComposer(); }
 function renderAll() { renderTree(); renderMain(); syncFixedButtons(); }
+
 function updateNavBackTop() {
   const topbar = document.querySelector('#topbar');
   const th = topbar ? topbar.offsetHeight : 60;
@@ -157,7 +160,18 @@ $('#hamburger').innerHTML = I.menu;
 $('#attachBtn').innerHTML = I.clip;
 $('#sendBtn').innerHTML = I.send;
 
-syncScopeBtn();
+initSearch({
+  input: $('#searchInput'),
+  button: $('#searchIcon'),
+  panel: $('#searchPanel'),
+  tree: $('#treeScroll'),
+  onOpenTopic: id => select(id),
+  onOpenEntry: (nodeId, entryId) => {
+    select(nodeId);
+    Store.ui.flashEntry = entryId;
+    renderEntries();
+  },
+});
 
 /* ============================================================
  * 全局快捷键 + document 事件委托
@@ -285,10 +299,8 @@ document.addEventListener('click', e => {
   const tg = e.target.closest('.md-tag,.quick-tag');
   if (tg) {
     const tag = tg.dataset.tag || (tg.textContent.startsWith('#') ? tg.textContent.slice(1) : '');
-    Store.ui.query = '#' + tag;
-    $('#searchInput').value = Store.ui.query;
     if (Store.ui.merged) exitMerge();
-    renderTree();
+    setQuery('#' + tag);
     return;
   }
 
@@ -365,7 +377,7 @@ if (draftIds.length) {
     Store.root.children = await scanChildren(Store.dir);
     Store.rebuildIndex();
     clearRuntimeCaches();
-    Store.resetMetaBuilt();
+    resetMeta();
     /* ★ 重扫后：用新扫出来的顺序重写所有 _顺序.json */
     try {
       const cnt = await rewriteAllOrders(Store.root);

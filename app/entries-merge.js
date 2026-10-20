@@ -4,7 +4,7 @@
  * 对谈模式开关也在这里 —— 它只影响渲染样式。
  */
 
-import { $, esc, badgeHTML } from './utils.js';
+import { $, esc, badgeHTML, PAGING } from './utils.js';
 import { I } from './icons.js';
 import { Store } from './store.js';
 import { dayKey, fmtDay } from './format.js';
@@ -12,8 +12,9 @@ import { hydrateImages } from './image.js';
 import { enqueue } from './writer.js';
 import { theme, writeTheme } from './theme.js';
 import {
-  toast, openMenu, closeSide,openTopicPicker,pushEsc
+  toast, openMenu, closeSide, pushEsc
 } from './ui.js';
+import { openTopicPicker } from './ui-topicPicker.js';
 import { walk } from './tree-utils.js';
 import { renderEntries } from './entries.js';
 import { renderPins } from './pins.js';
@@ -30,8 +31,8 @@ export function wireMerge(h) { Object.assign(D, h); }
 
 let _mergeEscOff = null;             // ★ 模块级
 /* 时间流分页参数 */
-const MERGED_INITIAL = 120;   // 开屏渲染条数
-const MERGED_CHUNK   = 40;    // 每次向上加载
+const MERGED_INITIAL = PAGING.mergedInitial;   // 开屏渲染条数
+const MERGED_CHUNK   = PAGING.mergedChunk;    // 每次向上加载
 /* 时间流分页状态 */
 let mergedList = [];
 let mergedStart = 0;

@@ -34,7 +34,6 @@ const _state = {
     selectedId:      null,
     viewHistory:     [],    // ★ 新增：视图历史栈 [{ nodeId, entryId, scrollTop }]
     viewCursor:      -1,    // ★ 新增：当前在栈里的位置
-    query:           '',
     renaming:        null,
     creatingParent:  null,
     editingEntry:    null,
@@ -45,8 +44,6 @@ const _state = {
     multiSelect:     new Set(),
     lastMultiClick:  null,
     expandedFolds:   new Set(),
-    searchScope:     'topic',
-    searchShown:     100,
     pinCursor:       null,
     drafts:          new Map(),  /* topicId → 未发送的草稿文本 */
   },
@@ -55,10 +52,7 @@ const _state = {
   scrollMemo: new Map(),    // topicId → scrollTop
   urlCache:   new Map(),    // nodeId + '\0' + path → objectURL
   mdCache:    new Map(),    // 片段文本 → 渲染后 HTML
-  replyCounts: new Map(),  //回复计数
-  relevanceCounts: new Map(), //关联计数
-  mirrorCounts: new Map(),  //镜像计数
-  metaBuilt: false, 
+  dataRevision: 0,
   
 
   fs: { ready: false, chain: Promise.resolve(), pending: 0, hasError: false },
@@ -93,6 +87,10 @@ function getScrollMemo(id) {
 /* ---- 变更 ---- */
 function setDir(h) { _state.dirHandle = h; }
 
+/* 数据版本：搜索等只读消费者用它判断缓存是否过期。
+   任何会改变节点标题 / 记录正文 / 记录增删的路径都要 bump。 */
+function touchData() { _state.dataRevision++; }
+
 /**
  * 重建三个索引。唯一改动索引的地方。
  * 调用点：连接 / 重扫 / 加删话题 / 移动话题。
@@ -121,21 +119,8 @@ function rebuildIndex() {
       rec(c);
     }
   })(_state.root);
+  _state.dataRevision++;
 }
-function setMetaCounts(reply, mirror, relevance) {
-  _state.replyCounts = reply;
-  _state.mirrorCounts = mirror;
-  _state.relevanceCounts = relevance;
-  _state.metaBuilt = true;
-}
-function isMetaBuilt() { return _state.metaBuilt; }
-function resetMetaBuilt() {
-  _state.metaBuilt = false;
-  _state.replyCounts.clear();
-  _state.mirrorCounts.clear();
-  _state.relevanceCounts.clear();
-}
-
 /* ---- 索引维护（增量，用于避免全量 rebuild）---- */
 
 function indexNode(n, p) {
@@ -150,6 +135,7 @@ function indexNode(n, p) {
     _state.entryIndex.set(e.id, rec);
     _state.blockIndex.set(Mutate.entryBlockId(e), rec);
   }
+  _state.dataRevision++;
 }
 
 function unindexNode(n) {
@@ -163,12 +149,14 @@ function unindexNode(n) {
     _state.entryIndex.delete(e.id);
     _state.blockIndex.delete(Mutate.entryBlockId(e));
   }
+  _state.dataRevision++;
 }
 
 function indexEntry(e, n)  {
   const rec = { e, node: n };
   _state.entryIndex.set(e.id, rec);
   _state.blockIndex.set(Mutate.entryBlockId(e), rec);
+  _state.dataRevision++;
 }
 
 /* 时序：composer 先 addEntry，再冻结 _writeStamp；blockId 可能因此变化。
@@ -179,6 +167,7 @@ function reindexEntry(e, n, oldBlockId) {
   const olds = Array.isArray(oldBlockId) ? oldBlockId : [oldBlockId];
   for (const id of olds) if (id) _state.blockIndex.delete(id);
   _state.blockIndex.set(Mutate.entryBlockId(e), rec);
+  _state.dataRevision++;
 }
 /* ---- 原子变更：内存 + 索引一起做 ----
  *
@@ -192,6 +181,7 @@ function addEntry(node, init) {
   const rec = { e, node };
   _state.entryIndex.set(e.id, rec);
   _state.blockIndex.set(Mutate.entryBlockId(e), rec);
+  _state.dataRevision++;
   return e;
 }
 
@@ -200,6 +190,7 @@ function insertSorted(node, init) {
   const rec = { e: r.entry, node };
   _state.entryIndex.set(r.entry.id, rec);
   _state.blockIndex.set(Mutate.entryBlockId(r.entry), rec);
+  _state.dataRevision++;
   return r;
 }
 
@@ -208,6 +199,7 @@ function removeEntry(node, id) {
   if (r) {
     _state.entryIndex.delete(r.entry.id);
     _state.blockIndex.delete(Mutate.entryBlockId(r.entry));
+    _state.dataRevision++;
   }
   return r;
 }
@@ -222,11 +214,9 @@ export const Store = {
   get scrollMemo(){ return _state.scrollMemo; },
   get urlCache()  { return _state.urlCache; },
   get mdCache()   { return _state.mdCache; },
+  get dataRevision(){ return _state.dataRevision; },
+  touchData,
   get fs()        { return _state.fs; },
-  get replyCounts(){ return _state.replyCounts; },
-  get mirrorCounts(){ return _state.mirrorCounts; },
-  get relevanceCounts(){ return _state.relevanceCounts; },
-  setMetaCounts,isMetaBuilt, resetMetaBuilt,
 
   // 查询
   node, parent, entry, blockEntry,

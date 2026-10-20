@@ -3,23 +3,21 @@
  *
  * 测纯渲染：给 Store 一份树，断言出来的 HTML。
  * 需要一个 document 桩（tree-render.js 顶层就 $('#treeScroll')），
- * 其中 #treeScroll / #scopeBtn 要返回真实存在的假元素。
+ * 其中 #treeScroll 要返回真实存在的假元素。
  */
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { fakeEl } from './_browser-stubs.js';
 
-/* renderTree() 会往 #treeScroll.innerHTML 写，syncScopeBtn() 要读 #scopeBtn。
-   所以这两个选择器必须给出真实存在的假元素（其余返回 null 即可）。
+/* renderTree() 会往 #treeScroll.innerHTML 写，
+   所以这个选择器必须给出真实存在的假元素（其余返回 null 即可）。
    treeBox 是模块级 const，只取一次 —— 要断言它就得盯住同一个对象。 */
 const treeScrollEl = fakeEl();
-const scopeBtnEl = fakeEl();
 
 globalThis.document = {
   querySelector: sel => (
-    sel === '#treeScroll' ? treeScrollEl :
-    sel === '#scopeBtn'   ? scopeBtnEl   : null
+    sel === '#treeScroll' ? treeScrollEl : null
   ),
   querySelectorAll: () => [],
   createElement: () => fakeEl(),
@@ -32,7 +30,7 @@ globalThis.document = {
 /* 这条 import 必须在 document 桩之后：tree-render.js 顶层就 $('#treeScroll') */
 const { Store } = await import('../store.js');
 const {
-  branchHTML, renderTree, renderSearch, syncScopeBtn,
+  branchHTML, renderTree,
 } = await import('../tree-render.js');
 
 /* ---------- 场景搭建 ---------- */
@@ -52,9 +50,6 @@ function setup() {
   Store.rebuildIndex();
 
   Store.collapsed.clear();
-  Store.ui.query        = '';
-  Store.ui.searchScope  = 'topic';
-  Store.ui.searchShown  = 100;
   Store.ui.selectedId   = null;
   Store.ui.renaming     = null;
   Store.ui.creatingParent = null;
@@ -151,14 +146,6 @@ test('renderTree：根层创建行只在 creatingParent=__root__ 时出现', () 
   assert.match(treeScrollEl.innerHTML, /create-input/);
 });
 
-test('renderTree：有搜索词时走搜索分支，不出树', () => {
-  setup();
-  Store.ui.query = '生活';
-  renderTree();
-  assert.match(treeScrollEl.innerHTML, /res-head/);
-  assert.doesNotMatch(treeScrollEl.innerHTML, /class="branch/);
-});
-
 test('renderTree：stagger 只在整页首次渲染时出现一次', () => {
   /* firstTree 是模块级状态，不能重置 —— 只能断言"最多出现一次"这个不变量 */
   setup();
@@ -172,108 +159,6 @@ test('renderTree：stagger 只在整页首次渲染时出现一次', () => {
   assert.doesNotMatch(second, /stagger/);
 });
 
-/* ---------- renderSearch ---------- */
-
-test('renderSearch：空查询给提示', () => {
-  Store.ui.query = '';
-  assert.match(renderSearch(), /输入关键词/);
-});
-
-test('renderSearch：命中话题标题', () => {
-  Store.ui.query = '工作';
-  Store.ui.searchScope = 'all';
-  const h = renderSearch();
-  assert.match(h, /话题 · 1/);
-  assert.match(h, /data-goto="A"/);
-});
-
-test('renderSearch：命中记录正文，并按时间倒序', () => {
-  const { A } = setup();
-  A.entries = [
-    { id: 'e1', text: '会议记录 Alpha', createdAt: 1000 },
-    { id: 'e2', text: '会议记录 Beta',  createdAt: 2000 },
-  ];
-  Store.rebuildIndex();
-  Store.ui.query = '会议';
-  Store.ui.searchScope = 'all';
-
-  const h = renderSearch();
-  assert.match(h, /记录 · 2/);
-  assert.ok(h.indexOf('data-goto-entry="e2"') < h.indexOf('data-goto-entry="e1"'),
-    '新的记录要排在前面');
-});
-
-test('renderSearch：scope=topic 只搜当前话题的子树', () => {
-  const { B } = setup();
-  Store.ui.selectedId = 'B';
-  Store.ui.searchScope = 'topic';
-  Store.ui.query = '工作';
-  /* B（生活）子树里没有「工作」→ 提示条 */
-  assert.match(renderSearch(), /本话题下没有匹配/);
-  assert.match(renderSearch(), /切换到全局搜索/);
-});
-
-test('renderSearch：scope=all 时不受 selectedId 限制', () => {
-  const { B } = setup();
-  Store.ui.selectedId = 'B';
-  Store.ui.searchScope = 'all';
-  Store.ui.query = '工作';
-  assert.match(renderSearch(), /data-goto="A"/);
-});
-
-test('renderSearch：超过 searchShown 时给"显示更多"', () => {
-  const { A } = setup();
-  A.entries = Array.from({ length: 5 }, (_, i) => ({
-    id: 'e' + i, text: '命中词 ' + i, createdAt: 1000 + i,
-  }));
-  Store.rebuildIndex();
-  Store.ui.query = '命中词';
-  Store.ui.searchScope = 'all';
-  Store.ui.searchShown = 2;
-
-  const h = renderSearch();
-  assert.match(h, /显示更多 · 还有 3 条/);
-});
-
-test('renderSearch：完全没命中给空提示', () => {
-  setup();
-  Store.ui.query = '绝对不存在的词';
-  Store.ui.searchScope = 'all';
-  assert.match(renderSearch(), /没有找到与/);
-});
-
-test('renderSearch：命中片段被 <mark> 包住且做了转义', () => {
-  const { A } = setup();
-  A.entries = [{ id: 'e1', text: '看 <b>重点</b> 内容', createdAt: 1000 }];
-  Store.rebuildIndex();
-  Store.ui.query = '重点';
-  Store.ui.searchScope = 'all';
-
-  const h = renderSearch();
-  assert.match(h, /<mark>重点<\/mark>/);
-  assert.doesNotMatch(h, /<b>/);
-});
-
-/* ---------- syncScopeBtn ---------- */
-
-test('syncScopeBtn：没选中话题 → 强制全局', () => {
-  setup();
-  Store.ui.searchScope = 'topic';
-  Store.ui.selectedId = null;
-  syncScopeBtn();
-  assert.equal(Store.ui.searchScope, 'all');
-  assert.equal(scopeBtnEl.textContent, '全局');
-});
-
-test('syncScopeBtn：选中话题时按 searchScope 显示', () => {
-  setup();
-  Store.ui.selectedId = 'A';
-
-  Store.ui.searchScope = 'topic';
-  syncScopeBtn();
-  assert.equal(scopeBtnEl.textContent, '本话题');
-
-  Store.ui.searchScope = 'all';
-  syncScopeBtn();
-  assert.equal(scopeBtnEl.textContent, '全局');
-});
+/* ---------- 搜索 ----------
+ * 搜索已迁到 search.js，测试见 search.test.js。
+ */

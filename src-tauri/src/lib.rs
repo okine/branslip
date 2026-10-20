@@ -31,14 +31,38 @@ fn read_text(dir: String, name: String) -> Result<String, String> {
 #[tauri::command]
 fn write_text(dir: String, name: String, text: String) -> Result<(), String> {
     let dirp = PathBuf::from(&dir);
-    fs::create_dir_all(&dirp).map_err(|e| e.to_string())?;
+    if let Err(e) = fs::create_dir_all(&dirp) {
+        return Err(format!("创建目录失败: {} (目录: {})", e, dir));
+    }
+    
     let final_p = dirp.join(&name);
     let tmp_p = dirp.join(format!("{}.tmp", name));
-    fs::write(&tmp_p, &text).map_err(|e| e.to_string())?;
-    if final_p.exists() {
-        fs::remove_file(&final_p).map_err(|e| e.to_string())?;
+    
+    if let Err(e) = fs::write(&tmp_p, &text) {
+        return Err(format!("写入 .tmp 失败: {} (文件: {})", e, tmp_p.display()));
     }
-    fs::rename(&tmp_p, &final_p).map_err(|e| e.to_string())?;
+    
+    // 修正未使用的变量警告，并改进错误处理
+        if final_p.exists() {
+            if let Err(e) = fs::remove_file(&final_p) {
+                // 打印具体的错误信息，方便定位
+                eprintln!("删除旧文件失败: {} (文件: {})", e, final_p.display());
+                    // 尝试去掉只读属性再删一次（防御性编程）
+            if let Ok(md) = fs::metadata(&final_p) {
+                let mut perms = md.permissions();
+                perms.set_readonly(false);
+                let _ = fs::set_permissions(&final_p, perms);
+            }
+            if let Err(e2) = fs::remove_file(&final_p) {
+                return Err(format!("覆盖旧文件失败: {} (文件: {})", e2, final_p.display()));
+            }
+        }
+    }
+    
+    if let Err(e) = fs::rename(&tmp_p, &final_p) {
+        return Err(format!("重命名失败: {} (源: {}, 目标: {})", e, tmp_p.display(), final_p.display()));
+    }
+    
     Ok(())
 }
 
@@ -97,6 +121,46 @@ fn rename_path(from: String, to: String) -> Result<(), String> {
     fs::rename(&f, &t).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn open_folder(path: String) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    if !p.is_dir() {
+        return Err("目录不存在或不是文件夹".into());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer.exe")
+            .arg(&p)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&p)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&p)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        Err("当前平台不支持打开文件夹".into())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -104,7 +168,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             list_dir, read_text, write_text, read_bytes_b64,
-            write_bytes, mkdir, exists, remove_entry, rename_path
+            write_bytes, mkdir, exists, remove_entry, rename_path,
+            open_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

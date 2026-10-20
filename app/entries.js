@@ -22,7 +22,7 @@
  *   - 其它一切依赖都从模块直接 import
  */
 
-import { $, esc } from './utils.js';
+import { $, esc, PAGING } from './utils.js';
 import { Store } from './store.js';
 import { Mutate } from './mutate.js';
 import { dayKey } from './format.js';
@@ -74,7 +74,6 @@ let D = {
 export function wireEntries(h) { Object.assign(D, h); }
 
 /* ---------- 模块状态 ---------- */
-const PAGE_SIZE = 80;       // 初始渲染条数（保留原语义）
 
 let firstMain = true;
 let dateJumpRaf = null;
@@ -130,7 +129,7 @@ export function renderEntries() {
   
 
   const total = n.entries.length;
-  const start = Math.max(0, total - PAGE_SIZE);
+  const start = Math.max(0, total - PAGING.initial);
   Store.ui.loadedStart = start;
   Store.ui.loadedEnd = total;
   ensureGlobalMeta()
@@ -235,7 +234,7 @@ function renderEntriesAround(n, targetId) {
     return;
   }
 
-  const B = 10;
+  const B = PAGING.around;
   const start = Math.max(0, target - B);
   const end = Math.min(total, target + B + 1);
 

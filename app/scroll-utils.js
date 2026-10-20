@@ -158,6 +158,28 @@ export function restoreScrollAnchor(sc, anchor) {
   return true;
 }
 
+/* 视口锚点：记录元素在屏幕上的绝对 top。
+   用于“滚动容器本身的位置变了”的场景，比如置顶条突然出现/消失。 */
+export function captureViewportAnchor(box) {
+  if (!box) return null;
+  for (const el of box.children) {
+    if (!el.classList.contains('entry-row') &&
+        !el.classList.contains('day-chip')) continue;
+    const r = el.getBoundingClientRect();
+    return { el, top: r.top };
+  }
+  return null;
+}
+
+export function restoreViewportAnchor(sc, anchor) {
+  if (!sc || !anchor || !anchor.el.isConnected) return false;
+  const now = anchor.el.getBoundingClientRect().top;
+  if (Math.abs(now - anchor.top) > 1) {
+    setScrollTopInstant(sc, sc.scrollTop + now - anchor.top);
+  }
+  return true;
+}
+
 /* 目标元素上方若处于 content-visibility 塌陷态，会导致 elTop 严重偏小。
    跳转前把上方一段窗口临时实物化，跳完（或下一帧）恢复。 */
    function materializeAbove(sc, el, windowSize) {

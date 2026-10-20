@@ -7,13 +7,12 @@ const {
   entryHTML, entryInnerHTML,
   setDialogueEnabled,
 } = await import('../entries-render.js');
+const { resetMeta } = await import('../meta-row.js');
 
 function reset() {
   Store.ui.editingEntry = null;
   Store.ui.merged = null;
-  Store.replyCounts.clear();
-  Store.mirrorCounts.clear();
-  Store.relevanceCounts.clear();
+  resetMeta();
 }
 
 test('entryInnerHTML：普通文本 → 转义后进 .etext', () => {

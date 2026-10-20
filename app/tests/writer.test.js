@@ -41,7 +41,6 @@ const { enqueue, setStatus, markFsReady } = await import('../writer.js');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 beforeEach(() => {
-  markFsReady();          /* 把上一条用例可能留下的等待者排空 */
   Store.fs.ready = true;
   Store.fs.pending = 0;
   Store.fs.hasError = false;

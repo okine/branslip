@@ -34,7 +34,7 @@ import { enqueue } from './writer.js';
 import { toast, openModal, closeModal, confirmDialog } from './ui.js';
 import { clearMDCache } from './md.js';
 import {
-  findNode, findParent, walk, pathOf, pOf, isDesc, subtreeIds,
+  findNode, findParent, walk, pathTitles, pOf, isDesc, subtreeIds,
 } from './tree-utils.js';
 import { renderTree } from './tree-render.js';
 
@@ -118,6 +118,7 @@ export function renameNode(n, title) {
     }
   }
   n.title = nextTitle;
+  Store.touchData();
   clearMDCache();
   enqueue(async () => {
     const pdir = dirOf(p);
@@ -259,7 +260,7 @@ export async function deleteNode(id) {
     const tname = n._name + '-' + stamp;
     const meta = {
       deletedAt: fmtStamp(Date.now()),
-      parentPath: pathOf(p).map(x => x.title).join('/'),
+      parentPath: pathTitles(p, '/'),
       parentId: p.id === '__root__' ? null : (p.topicId || null),
       originalName: n._name,
       originalId: n.topicId || null,

@@ -66,9 +66,14 @@ export function pathOf(n) {
   return p;
 }
 
+/* 路径标题串：pathOf + filter + join 的统一入口 */
+export function pathTitles(n, sep = ' / ') {
+  return pathOf(n).map(x => x.title).filter(Boolean).join(sep);
+}
+
 /* 路径的规范化字符串 —— 用作 Map/Set 的 key */
 export function pOf(n) {
-  return pathOf(n).map(x => x.title).join('\u0001');
+  return pathTitles(n, '\u0001');
 }
 
 /* 反向：'\u0001' 分隔的标题路径 → node */

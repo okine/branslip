@@ -13,7 +13,7 @@
  * 发送者前缀：多发送者时每条 entry 前加 **from**；
  *             单发送者（频道、Saved Messages）不加，保持正文干净。
  *
- * 附件：当前只保留文本路径（photos/xxx），不复制实际文件。
+ * 附件：可选随消息复制文件。
  */
 
 import { uid } from './utils.js';

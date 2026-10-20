@@ -16,6 +16,10 @@ const {
   addGlobalMetaFor,
   diffGlobalMetaFor,
   removeGlobalMetaFor,
+  getMetaCounts,
+  resetMeta,
+  setMetaCounts,
+  isMetaBuilt,
 } = await import('../meta-row.js');
 
 const mk = (id, title, entries = []) => ({
@@ -33,10 +37,7 @@ function setup(entries = []) {
     Store.rebuildIndex();
   
     /* 清干净再重置标志位 */
-    Store.replyCounts.clear();
-    Store.mirrorCounts.clear();
-    Store.relevanceCounts.clear();
-    Store.resetMetaBuilt();
+    resetMeta();
     return { A, B };
   }
 
@@ -145,7 +146,7 @@ test('buildGlobalMetaCounts：跨话题累计', () => {
   Store.root.children = [A, B];
   Store.root.entries = [];
   Store.rebuildIndex();
-  Store.resetMetaBuilt();
+  resetMeta();
 
   const g = buildGlobalMetaCounts();
   assert.equal(g.reply.get('x').size, 2);
@@ -166,7 +167,7 @@ test('buildGlobalMetaCounts：空树 → 三个空 Map', () => {
 test('★ addGlobalMetaFor：增量追加，等价于重新全量', () => {
   const { A } = setup([entry('e1', '[[~t#^x]]')]);
   const g = buildGlobalMetaCounts();
-  Store.setMetaCounts(g.reply, g.mirror, g.relevance);
+  setMetaCounts(g.reply, g.mirror, g.relevance);
 
   /* 追加一条新 entry，走增量路径 */
   const e2 = entry('e2', '[[~t#^x]] 和 ![[~t#^y]]');
@@ -176,23 +177,23 @@ test('★ addGlobalMetaFor：增量追加，等价于重新全量', () => {
 
   /* 与重新全量对比 —— 这是核心不变量 */
   const full = buildGlobalMetaCounts();
-  assert.equal(Store.replyCounts.get('x').size, full.reply.get('x').size);
+  assert.equal(getMetaCounts().reply.get('x').size, full.reply.get('x').size);
   assert.deepEqual(
-    [...Store.replyCounts.get('x')].sort(),
+    [...getMetaCounts().reply.get('x')].sort(),
     [...full.reply.get('x')].sort()
   );
-  assert.equal(Store.mirrorCounts.get('y').size, full.mirror.get('y').size);
+  assert.equal(getMetaCounts().mirror.get('y').size, full.mirror.get('y').size);
 });
 
 test('addGlobalMetaFor：Store 未构建（isMetaBuilt=false）→ no-op', () => {
   setup();
-  Store.resetMetaBuilt();          // 确认未构建
+  resetMeta();          // 确认未构建
   const e = entry('e1', '[[~t#^x]]');
   addGlobalMetaFor(e);
 
-  assert.equal(Store.isMetaBuilt(), false);
+  assert.equal(isMetaBuilt(), false);
   /* 无异常、也没在未构建的 Store 上乱写 */
-  assert.equal(Store.replyCounts.size, 0);
+  assert.equal(getMetaCounts().reply.size, 0);
 });
 
 /* ============================================================
@@ -201,7 +202,7 @@ test('addGlobalMetaFor：Store 未构建（isMetaBuilt=false）→ no-op', () =>
 
 test('★ diffGlobalMetaFor：旧引用被撤掉 → set 空 → key 删除', () => {
   setup();
-  Store.setMetaCounts(
+  setMetaCounts(
     new Map([['A', new Set(['e1'])]]),
     new Map(),
     new Map()
@@ -210,14 +211,14 @@ test('★ diffGlobalMetaFor：旧引用被撤掉 → set 空 → key 删除', ()
   const e = entry('e1', 'new [[~t#^B]]');
   diffGlobalMetaFor(e, 'old [[~t#^A]]', 'new [[~t#^B]]');
 
-  assert.equal(Store.replyCounts.has('A'), false,
+  assert.equal(getMetaCounts().reply.has('A'), false,
     'A 的 set 空了以后 key 要被删掉，否则后面 count=0 的徽章还会渲染');
-  assert.equal(Store.replyCounts.get('B').has('e1'), true);
+  assert.equal(getMetaCounts().reply.get('B').has('e1'), true);
 });
 
 test('diffGlobalMetaFor：新引用是旧引用的超集 → 旧的保留，新的加上', () => {
   setup();
-  Store.setMetaCounts(
+  setMetaCounts(
     new Map([['A', new Set(['e1'])]]),
     new Map(),
     new Map()
@@ -226,13 +227,13 @@ test('diffGlobalMetaFor：新引用是旧引用的超集 → 旧的保留，新�
   const e = entry('e1', '[[~t#^A]] 和 [[~t#^B]]');
   diffGlobalMetaFor(e, '[[~t#^A]]', '[[~t#^A]] 和 [[~t#^B]]');
 
-  assert.equal(Store.replyCounts.get('A').has('e1'), true, 'A 的引用还在');
-  assert.equal(Store.replyCounts.get('B').has('e1'), true, 'B 是新加的');
+  assert.equal(getMetaCounts().reply.get('A').has('e1'), true, 'A 的引用还在');
+  assert.equal(getMetaCounts().reply.get('B').has('e1'), true, 'B 是新加的');
 });
 
 test('diffGlobalMetaFor：编辑后引用完全不变 → 两边都保留', () => {
   setup();
-  Store.setMetaCounts(
+  setMetaCounts(
     new Map([['A', new Set(['e1'])]]),
     new Map(),
     new Map()
@@ -241,13 +242,13 @@ test('diffGlobalMetaFor：编辑后引用完全不变 → 两边都保留', () =
   const e = entry('e1', '[[~t#^A]] 文字改了但引用没变');
   diffGlobalMetaFor(e, '[[~t#^A]] 原文', '[[~t#^A]] 文字改了但引用没变');
 
-  assert.equal(Store.replyCounts.get('A').has('e1'), true);
-  assert.equal(Store.replyCounts.get('A').size, 1);
+  assert.equal(getMetaCounts().reply.get('A').has('e1'), true);
+  assert.equal(getMetaCounts().reply.get('A').size, 1);
 });
 
 test('diffGlobalMetaFor：跨类迁移 —— reply → mirror', () => {
   setup();
-  Store.setMetaCounts(
+  setMetaCounts(
     new Map([['X', new Set(['e1'])]]),
     new Map(),
     new Map()
@@ -256,15 +257,15 @@ test('diffGlobalMetaFor：跨类迁移 —— reply → mirror', () => {
   const e = entry('e1', '![[~t#^X]]');
   diffGlobalMetaFor(e, '[[~t#^X]]', '![[~t#^X]]');
 
-  assert.equal(Store.replyCounts.has('X'), false,
+  assert.equal(getMetaCounts().reply.has('X'), false,
     'reply 里的 e1 应当被移除，空 set 被删');
-  assert.equal(Store.mirrorCounts.get('X').has('e1'), true,
+  assert.equal(getMetaCounts().mirror.get('X').has('e1'), true,
     '同时进入 mirror');
 });
 
 test('diffGlobalMetaFor：多条并存 —— 只移除本 entry，别人不受影响', () => {
   setup();
-  Store.setMetaCounts(
+  setMetaCounts(
     new Map([['A', new Set(['e1', 'e2', 'e3'])]]),
     new Map(),
     new Map()
@@ -273,12 +274,12 @@ test('diffGlobalMetaFor：多条并存 —— 只移除本 entry，别人不受�
   const e = entry('e1', 'no more ref');
   diffGlobalMetaFor(e, '[[~t#^A]]', 'no more ref');
 
-  assert.deepEqual([...Store.replyCounts.get('A')].sort(), ['e2', 'e3']);
+  assert.deepEqual([...getMetaCounts().reply.get('A')].sort(), ['e2', 'e3']);
 });
 
 test('diffGlobalMetaFor：Store 未构建 → no-op', () => {
   setup();
-  Store.resetMetaBuilt();
+  resetMeta();
   const e = entry('e1', '[[~t#^A]]');
   assert.doesNotThrow(() =>
     diffGlobalMetaFor(e, '[[~t#^A]]', '[[~t#^A]] 变了'));
@@ -290,7 +291,7 @@ test('diffGlobalMetaFor：Store 未构建 → no-op', () => {
 
 test('★ removeGlobalMetaFor：全部撤掉；set 空 → key 删除', () => {
   setup();
-  Store.setMetaCounts(
+  setMetaCounts(
     new Map([['X', new Set(['e1'])]]),
     new Map([['Y', new Set(['e1'])]]),
     new Map([['Z', new Set(['e1'])]]),
@@ -299,14 +300,14 @@ test('★ removeGlobalMetaFor：全部撤掉；set 空 → key 删除', () => {
   const e = entry('e1', '[[~t#^X]] 和 ![[~t#^Y]]\n> p\n∝ k [[~t#^Z]]\n\nbody');
   removeGlobalMetaFor(e);
 
-  assert.equal(Store.replyCounts.has('X'), false);
-  assert.equal(Store.mirrorCounts.has('Y'), false);
-  assert.equal(Store.relevanceCounts.has('Z'), false);
+  assert.equal(getMetaCounts().reply.has('X'), false);
+  assert.equal(getMetaCounts().mirror.has('Y'), false);
+  assert.equal(getMetaCounts().relevance.has('Z'), false);
 });
 
 test('removeGlobalMetaFor：别的 entry 的引用不动', () => {
   setup();
-  Store.setMetaCounts(
+  setMetaCounts(
     new Map([['A', new Set(['e1', 'e2'])]]),
     new Map(),
     new Map()
@@ -315,7 +316,7 @@ test('removeGlobalMetaFor：别的 entry 的引用不动', () => {
   const e = entry('e1', '[[~t#^A]]');
   removeGlobalMetaFor(e);
 
-  assert.deepEqual([...Store.replyCounts.get('A')], ['e2']);
+  assert.deepEqual([...getMetaCounts().reply.get('A')], ['e2']);
 });
 
 /* ============================================================
@@ -325,7 +326,7 @@ test('removeGlobalMetaFor：别的 entry 的引用不动', () => {
 test('★ 增删改混合：增量维护后与全量重建完全一致', () => {
   const { A } = setup([entry('e1', '[[~t#^x]]')]);
   let g = buildGlobalMetaCounts();
-  Store.setMetaCounts(g.reply, g.mirror, g.relevance);
+  setMetaCounts(g.reply, g.mirror, g.relevance);
 
   /* 追加 e2 */
   const e2 = entry('e2', '![[~t#^x]]');
@@ -347,7 +348,7 @@ test('★ 增删改混合：增量维护后与全量重建完全一致', () => {
 
   /* 逐 key 比较（set 大小 + 内容） */
   for (const bag of ['reply', 'mirror', 'relevance']) {
-    const live = Store[bag + 'Counts'];
+    const live = getMetaCounts()[bag];
     const keys = new Set([...live.keys(), ...full[bag].keys()]);
     for (const k of keys) {
       const a = live.get(k) || new Set();
