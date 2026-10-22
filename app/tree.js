@@ -28,7 +28,7 @@
 import { $, esc, badgeHTML } from './utils.js';
 import { I } from './icons.js';
 import { Store } from './store.js';
-import { invoke } from './platform.js';
+import { invoke, PLATFORM } from './platform.js';
 import {
  deleteOrphanAttachments
 } from './io.js';
@@ -47,7 +47,7 @@ import {
 import { renderEntries } from './entries.js';
 import { updateScrollBtn } from './entries-jump.js';
 import { setReply, setRelevance, restoreDraft } from './composer.js';
-import { recallScroll, flushScroll, rememberScroll } from './entries-jump.js';
+import { recallScroll, flushScroll, rememberScroll, restoreTopAnchor, settleTopAnchor, captureAnchorFor } from './entries-jump.js';
 
 import * as treeRender from './tree-render.js';
 import {
@@ -119,6 +119,7 @@ export function select(id, opts) {
   if (!wasMerged && prevId && prevId !== id) {
      const s = $('#entriesScroll');
      if (s) rememberScroll(prevId, s.scrollTop);
+     captureAnchorFor(prevId);      // DOM 还是旧话题时抓锚点
      flushScroll(prevId);
   }
   if (Store.ui.selectedId !== id) { 
@@ -164,12 +165,17 @@ export function select(id, opts) {
   if (opts.noScrollRestore) return;
   requestAnimationFrame(() => {
     const s = $('#entriesScroll'); if (!s) return;
-    const saved = wasMerged ? null : recallScroll(id, Store.node(id));
-    const target = saved != null ? saved : s.scrollHeight;
-    s.scrollTo({ top: target, behavior: 'instant' });
+    const node = Store.node(id);
+    const anchor = (!wasMerged && node && node.scroll && node.scroll.id) ? node.scroll : null;
+    /* 优先按「顶部那条记录 + 像素偏移」还原：清缓存/改分页后像素位置会变 */
+    const okAnchor = anchor ? restoreTopAnchor(anchor) : false;
+    if (!okAnchor) {
+      const saved = wasMerged ? null : recallScroll(id, Store.node(id));
+      const target = saved != null ? saved : s.scrollHeight;
+      s.scrollTo({ top: target, behavior: 'instant' });
+    }
     requestAnimationFrame(() => {
-      const t2 = saved != null ? saved : s.scrollHeight;
-      s.scrollTo({ top: t2, behavior: 'instant' });
+      if (anchor) settleTopAnchor(anchor, 4);
       updateScrollBtn();
     });
   });
@@ -206,7 +212,7 @@ function buildTopicMenuItems(n) {
         }
       ),
     },
-    ...(Storage.isTauri ? [
+    ...(PLATFORM.isTauri ? [
       { sep: true },
       { icon: I.folder, label: '打开所在文件夹', fn: () => openTopicFolder(n) },
     ] : []),

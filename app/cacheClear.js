@@ -41,5 +41,3 @@ export function clearTopicCaches(nodeId) {
   clearPendingForNode(nodeId);
 }
 
-/* 这两个名字保留给调用方按需组合，不再重复写 import */
-export { clearMDCache, clearEarlierObs, clearLaterObs, clearScrollState, resetImgObserver };

@@ -9,6 +9,9 @@
  */
 
 import { Storage } from './storage.js';
+import { Store, draftTopicIds } from './store.js';
+import { collapseAll, findNode, findByPath, pOf } from './tree-utils.js';
+import { rewriteAllOrders } from './io.js';
 import { uid }     from './utils.js';
 import { MONTH_RE } from './format.js';
 import { parseEntries } from './md.js';
@@ -70,6 +73,11 @@ export async function scanDir(dir, name) {
     node.introAt  = typeof meta.introAt === 'string' ? meta.introAt : null;
     if (meta.scroll && Number.isFinite(meta.scroll.top)) {
       node.scroll = { top: meta.scroll.top };
+      /* 顶部锚点（新格式才有）：记录 id + 像素偏移，跨分页/清缓存更稳 */
+      if (typeof meta.scroll.id === 'string' && meta.scroll.id) {
+        node.scroll.id = meta.scroll.id;
+        node.scroll.off = Number.isFinite(meta.scroll.off) ? meta.scroll.off : 0;
+      }
     }
   } catch (e) {}
 
@@ -120,4 +128,104 @@ export async function scanDir(dir, name) {
   node.folds = folds;
   node.children = children;
   return node;
+}
+
+/* ---------- 重扫（app.js 只负责注入渲染能力） ---------- */
+let PORTS = {};
+export function wireLoader(p) { Object.assign(PORTS, p || {}); }
+
+/* 这些能力由 app.js 注入，loader 本身不碰 UI / 缓存模块 */
+const say = m => { try { PORTS.toast?.(m); } catch (e) {} };
+const ask = (t, m, o) => (PORTS.confirmDialog ? PORTS.confirmDialog(t, m, o) : Promise.resolve(true));
+
+export async function rescanFromDisk() {
+  if (!Store.fs.ready) { say('尚未连接文件夹'); return; }
+
+  if (Store.fs.pending > 0) {
+    const wait = await ask(
+      '还有写入未完成',
+      '有 ' + Store.fs.pending + ' 个磁盘写入任务正在排队。\n' +
+      '重新读取磁盘前建议先等它们完成，否则可能读到旧内容。',
+      { okText: '等待完成', cancelText: '直接重扫' }
+    );
+    if (wait) {
+      say('等待写入完成…');
+      await PORTS.waitForIdle?.();
+    }
+  }
+
+  const taBefore = (typeof document !== 'undefined') ? document.querySelector('#inputArea') : null;
+  const draft = (taBefore && taBefore.value.trim()) ? taBefore.value : null;
+  const editing = Store.ui.editingEntry || Store.ui.renaming || Store.ui.creatingParent;
+
+  const drafts = draftTopicIds();
+  if (drafts.length) {
+    const first = findNode(drafts[0]);
+    const name = first ? first.title : '（已删除的话题）';
+    const more = drafts.length > 1 ? '（另有 ' + (drafts.length - 1) + ' 个）' : '';
+    const go = await ask(
+      '有未发送的草稿',
+      '有 ' + drafts.length + ' 个话题里存在未发送的草稿，最早的一个是「' + name + '」' + more + '。\n' +
+      '是否先跳过去看一眼？',
+      { okText: '去看看', cancelText: '继续重扫' }
+    );
+    if (go) { PORTS.select?.(drafts[0]); return; }
+  }
+
+  if (draft || editing) {
+    const ok = await ask(
+      '重新读取磁盘',
+      '当前有未保存的输入框草稿或正在编辑的记录，重新读取会丢弃编辑。要继续吗？',
+      { danger: true, okText: '继续' }
+    );
+    if (!ok) return;
+  }
+
+  const selNode = Store.ui.selectedId ? findNode(Store.ui.selectedId) : null;
+  const selPath = selNode ? pOf(selNode) : null;
+  const draftPath = (draft && selNode) ? pOf(selNode) : null;
+
+  PORTS.enqueue?.(async () => {
+    Store.root.children = await scanChildren(Store.dir);
+    Store.rebuildIndex();
+    PORTS.clearCaches?.();
+    PORTS.resetMeta?.();
+    try {
+      const cnt = await rewriteAllOrders(Store.root);
+      console.log('[rescan] 已重写 ' + cnt + ' 个顺序文件');
+    } catch (e) {
+      console.warn('[rescan] 重写顺序失败', e);
+    }
+
+    Store.ui.viewHistory = [];
+    Store.ui.drafts.clear();
+    Store.ui.viewCursor = -1;
+    history.replaceState({ root: true }, '');
+
+    Store.collapsed.clear();
+    collapseAll();
+
+    Store.ui.editingEntry = null;
+    Store.ui.creatingParent = null;
+    Store.ui.renaming = null;
+
+    Store.ui.selectedId = null;
+    PORTS.renderAll?.();
+    const t = selPath ? findByPath(selPath) : null;
+    if (t) PORTS.select?.(t.id);
+    else if (Store.root.children[0]) PORTS.select?.(Store.root.children[0].id);
+
+    if (draft && draftPath) {
+      const restored = findByPath(draftPath);
+      if (restored && restored.id === Store.ui.selectedId) {
+        const ta2 = (typeof document !== 'undefined') ? document.querySelector('#inputArea') : null;
+        if (ta2 && !ta2.value) {
+          ta2.value = draft;
+          ta2.dispatchEvent(new Event('input'));
+        }
+      }
+    }
+
+    say('已从磁盘重新读取');
+  });
 }

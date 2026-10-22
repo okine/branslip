@@ -37,7 +37,8 @@
  */
 
 import { $,esc  }     from './utils.js';
-import { Store } from './store.js';
+import { Store, draftTopicIds } from './store.js';
+import { currentWindow } from './platform.js';
 import { toast, promptPermissionRecovery, openModal, closeModal } from './ui.js';
 import { stats } from './tree-utils.js';
 let lastStats = null;
@@ -307,4 +308,49 @@ export function waitForIdle(onProgress) {
     };
     tick();
   });
+}
+/* ---------- 退出保护（有草稿 / 有写盘排队时别静默丢） ----------
+ * 1) 浏览器 & WebView：beforeunload（只能弹系统默认确认框）
+ * 2) Tauri 桌面：拦窗口关闭事件，弹自己的确认框，确认了才 destroy
+ * 由 app.js 在 wire 完成后调用一次。
+ */
+let _exitGuardInstalled = false;
+
+function hasUnsavedWork() {
+  return draftTopicIds().length > 0 || Store.fs.pending > 0;
+}
+
+function unsavedSummary() {
+  const d = draftTopicIds().length;
+  const p = Store.fs.pending;
+  const bits = [];
+  if (d) bits.push(d + ' 个话题里有草稿');
+  if (p) bits.push(p + ' 个写入还在排队');
+  return bits.join('，');
+}
+
+export function installExitGuard() {
+  if (_exitGuardInstalled) return;
+  _exitGuardInstalled = true;
+
+  window.addEventListener('beforeunload', e => {
+    if (!hasUnsavedWork()) return;
+    e.preventDefault();
+    e.returnValue = '';
+  });
+
+  try {
+    const win = currentWindow();
+    if (!win || typeof win.onCloseRequested !== 'function') return;
+    win.onCloseRequested(async ev => {
+      if (!hasUnsavedWork()) return;
+      ev.preventDefault();
+      const ok = await confirmDialog(
+        '还有没保存的内容',
+        unsavedSummary() + '。\n现在关闭会丢掉这些内容。',
+        { danger: true, okText: '仍然关闭', cancelText: '继续写' }
+      );
+      if (ok) { try { await win.destroy(); } catch (e) {} }
+    });
+  } catch (e) { /* 非 Tauri 环境忽略 */ }
 }

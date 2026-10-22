@@ -53,6 +53,19 @@ export function stats() {
   return { t, e };
 }
 
+/* 全部折叠：把所有"有子话题"的节点标进 Store.collapsed。
+   原来在 boot.js，重扫（loader.js）也要用，挪到这里避免 boot ↔ loader 互相 import。 */
+export function collapseAll() {
+  const rec = (node, parentKey) => {
+    for (const c of node.children) {
+      const key = parentKey ? parentKey + '\u0001' + c.title : c.title;
+      if (c.children.length) Store.collapsed.add(key);
+      rec(c, key);
+    }
+  };
+  rec(Store.root, '');
+}
+
 /* 从根到 n 的路径（含 n），用于面包屑 */
 export function pathOf(n) {
   const p = [n];

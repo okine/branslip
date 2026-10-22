@@ -184,7 +184,7 @@ const Storage = (() => {
     appendText:  isTauri ? tauriAppendText  : webAppendText,
     writeBlob:   isTauri ? tauriWriteBlob   : webWriteBlob,
 
-    /* moveDirTo 只有 Tauri 实现。io.js 里判断 Storage.isTauri 再调用 */
+    /* moveDirTo 只有 Tauri 实现。调用方用 PLATFORM.isTauri 判断 */
     moveDirTo:   isTauri ? tauriMoveDirTo   : null,
 
     /* moveEntry：把 srcDir/srcName 整体移到 dstDir/dstName */

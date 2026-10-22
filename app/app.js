@@ -18,9 +18,9 @@
  */
 import {
   boot, wireBoot, connect,
-  loadPrefs, savePrefs, collapseAll, chooseAndroidDir,
+  loadPrefs, savePrefs, changeFolder,
 } from './boot.js';
-import { Store } from './store.js';
+import { Store, draftTopicIds } from './store.js';
 import { Storage } from './storage.js';
 import { PLATFORM, invoke, currentWindow } from './platform.js';
 import { $, esc } from './utils.js';
@@ -33,10 +33,10 @@ import { resetMeta } from './meta-row.js';
 import { 
   toast, runTopEsc, confirmDialog
 } from './ui.js';
-import { scanChildren } from './loader.js';
-import { enqueue,waitForIdle } from './writer.js';
+import { scanChildren, rescanFromDisk, wireLoader } from './loader.js';
+import { enqueue, waitForIdle, installExitGuard } from './writer.js';
 import {
-  findNode, findByPath, pathOf, pOf, findTopicByRefId,
+  findNode, findByPath, pathOf, pOf, findTopicByRefId, collapseAll,
 } from './tree-utils.js';
 import {
   select, wireTree, viewBack, pushViewState
@@ -47,7 +47,7 @@ import {
   renderEntries, wireEntries,
 } from './entries.js';
 import {
-    jumpToBlock, jumpToStamp, jumpToRow,
+    jumpToBlock, jumpToStamp, jumpToRow, maybeLoadEarlier, loadEarlier,
   } from './entries-jump.js';
 // 新增
 import {
@@ -67,6 +67,10 @@ import { initFixedButtons, syncFixedButtons } from './fixed-buttons.js';
 
 
 
+
+/* 调试用：网页版里模块变量不是全局，控制台需要它来查状态 */
+if (typeof window !== 'undefined') window.__SZJ = { Store, maybeLoadEarlier, loadEarlier };
+
 /* 先建固定按钮；重扫/换文件夹由 app 提供，导入流程由 fixed-buttons 自己持有 */
 initFixedButtons({
   renderAll,
@@ -75,15 +79,6 @@ initFixedButtons({
   onChangeFolder: changeFolder,
 });
 
-/* 所有存在未发送草稿的话题 id（按写入顺序） */
-function draftTopicIds() {
-  const ids = new Set(Store.ui.drafts.keys());
-  const cur = Store.ui.selectedId;
-  const ta  = document.querySelector('#inputArea');
-  /* 当前话题的 textarea 可能还没触发 input（极端情况），补一道保险 */
-  if (cur && ta && ta.value.trim()) ids.add(cur);
-  return [...ids];
-}
 
 /* ============================================================
  * 主区编排
@@ -210,44 +205,6 @@ window.__shBack = () => {
   return draftTopicIds().length ? 'draft' : 'none';
 };
 
-/* ── 关闭守卫：有草稿 / 有写盘排队时别静默丢 ──────────────────
-   1) 浏览器 & WebView：beforeunload（只能弹系统默认确认框）
-   2) Tauri 桌面：拦窗口关闭事件，弹自己的确认框，确认了才 destroy */
-function hasUnsavedWork() {
-  return draftTopicIds().length > 0 || Store.fs.pending > 0;
-}
-
-function unsavedSummary() {
-  const d = draftTopicIds().length;
-  const p = Store.fs.pending;
-  const bits = [];
-  if (d) bits.push(d + ' 个话题里有草稿');
-  if (p) bits.push(p + ' 个写入还在排队');
-  return bits.join('，');
-}
-
-window.addEventListener('beforeunload', e => {
-  if (!hasUnsavedWork()) return;
-  e.preventDefault();
-  e.returnValue = '';
-});
-
-(function wireTauriCloseGuard() {
-  try {
-    const win = currentWindow();
-    if (!win || typeof win.onCloseRequested !== 'function') return;
-    win.onCloseRequested(async ev => {
-      if (!hasUnsavedWork()) return;
-      ev.preventDefault();
-      const ok = await confirmDialog(
-        '还有没保存的内容',
-        unsavedSummary() + '。\n现在关闭会丢掉这些内容。',
-        { danger: true, okText: '仍然关闭', cancelText: '继续写' }
-      );
-      if (ok) { try { await win.destroy(); } catch (e) {} }
-    });
-  } catch (e) { /* 非 Tauri 环境忽略 */ }
-})();
 
 document.addEventListener('click', e => {
   /* ── 1. 镜像卡头：打开源 ── */
@@ -374,195 +331,6 @@ document.addEventListener('click', e => {
  * 侧栏按钮
  * ============================================================ */
 
-async function rescanFromDisk() {
-  if (!Store.fs.ready) { toast('尚未连接文件夹'); return; }
-
-   /* ★ 新增：先问要不要等 pending 写完 */
-   if (Store.fs.pending > 0) {
-    const wait = await confirmDialog(
-      '还有写入未完成',
-      '有 ' + Store.fs.pending + ' 个磁盘写入任务正在排队。\n' +
-      '重新读取磁盘前建议先等它们完成，否则可能读到旧内容。',
-      { okText: '等待完成', cancelText: '直接重扫' }
-    );
-    if (wait) {
-      toast('等待写入完成…');
-      await waitForIdle();
-    }
-  }
-  /* 1. 检查未保存内容，弹确认 */
-  const taBefore = document.querySelector('#inputArea');
-  const draft = (taBefore && taBefore.value.trim()) ? taBefore.value : null;
-  const editing = Store.ui.editingEntry ||
-                  Store.ui.renaming      || Store.ui.creatingParent;
-  /* ★ 新增：草稿跳转 —— 优先于“未保存内容”那条提示 */
-const draftIds = draftTopicIds();
-if (draftIds.length) {
-  const first = findNode(draftIds[0]);
-  const name  = first ? first.title : '（已删除的话题）';
-  const more  = draftIds.length > 1 ? '（另有 ' + (draftIds.length - 1) + ' 个）' : '';
-  const go = await confirmDialog(
-    '有未发送的草稿',
-    '有 ' + draftIds.length + ' 个话题里存在未发送的草稿，最早的一个是「' + name + '」' + more + '。\n' +
-    '是否先跳过去看一眼？',
-    { okText: '去看看', cancelText: '继续重扫' }
-  );
-  if (go) { select(draftIds[0]); return; }
-}
-  if (draft || editing) {
-    const ok = await confirmDialog(
-      '重新读取磁盘',
-      '当前有未保存的输入框草稿或正在编辑的记录，重新读取会丢弃编辑。要继续吗？',
-      { danger: true, okText: '继续' }
-    );
-    if (!ok) return;
-  }
-
-  /* 2. 记下草稿对应的路径 —— rescan 后按路径找回来 */
-  const draftPath = (draft && Store.ui.selectedId)
-    ? (() => {
-        const n = findNode(Store.ui.selectedId);
-        return n ? pOf(n) : null;
-      })()
-    : null;
-
-
-  enqueue(async () => {
-    Store.root.children = await scanChildren(Store.dir);
-    Store.rebuildIndex();
-    clearRuntimeCaches();
-    resetMeta();
-    /* ★ 重扫后：用新扫出来的顺序重写所有 _顺序.json */
-    try {
-      const cnt = await rewriteAllOrders(Store.root);
-      console.log('[rescan] 已重写 ' + cnt + ' 个顺序文件');
-    } catch (e) {
-      console.warn('[rescan] 重写顺序失败', e);
-    }
-    /* ★ 新增 */
-    Store.ui.viewHistory = [];
-    Store.ui.drafts.clear();
-    Store.ui.viewCursor = -1;
-    history.replaceState({ root: true }, '');
-    /* ★ 新增：重扫后折叠全部 */
-    Store.collapsed.clear();
-    collapseAll();
-
-    /* 3. 清掉一切指向旧对象的编辑态 */
-    Store.ui.editingEntry    = null;
-    Store.ui.creatingParent  = null;
-    Store.ui.renaming        = null;
-
-    const prefs = loadPrefs();
-    const t = prefs.sel ? findByPath(prefs.sel) : null;
-    Store.ui.selectedId = null;
-    renderAll();
-    if (t) select(t.id);
-    else if (Store.root.children[0]) select(Store.root.children[0].id);
-
-    /* 4. 恢复草稿 —— 仅当话题仍是当前选中时 */
-    if (draft && draftPath) {
-      const restored = findByPath(draftPath);
-      if (restored && restored.id === Store.ui.selectedId) {
-        const ta2 = document.querySelector('#inputArea');
-        if (ta2 && !ta2.value) {
-          ta2.value = draft;
-          ta2.dispatchEvent(new Event('input'));   // 触发 autoGrow + refreshPreview
-        }
-      }
-    }
-
-    toast('已从磁盘重新读取');
-  });
-}
-
-/*提醒*/
-async function changeFolder() {
-  /* ── Tauri 分支 ── */
-  if (Storage.isTauri) {
-    let dir;
-    try {
-      if (Storage.isAndroid) {
-        /* Android 只有应用内目录浏览器，没有系统文件夹对话框 */
-        dir = await chooseAndroidDir();
-        if (!dir) return;
-        if (Store.dir === dir) { toast('已经是这个文件夹了：' + dir); return; }
-      } else {
-        dir = await invoke('plugin:dialog|open', {
-          options: { directory: true, multiple: false, title: '选择存储文件夹' },
-        });
-      }
-    } catch (e) {
-      if (e && e.name !== 'AbortError') toast('无法打开文件夹：' + (e.message || e));
-      return;
-    }
-    if (!dir) return;
-
-    /* 与 Web 版保持一致的确认逻辑（未写入 / 草稿提示） */
-    if (Store.fs.pending > 0) {
-      const ok = await confirmDialog(
-        '还有写入未完成',
-        '当前有 ' + Store.fs.pending + ' 个磁盘写入任务在排队。\n' +
-        '现在切换文件夹会中断它们。',
-        { danger: true, okText: '仍然切换' }
-      );
-      if (!ok) return;
-    }
-    const draftIds = draftTopicIds();
-    if (draftIds.length) {
-      const first = findNode(draftIds[0]);
-      const name = first ? first.title : '（已删除的话题）';
-      const go = await confirmDialog(
-        '有未发送的草稿',
-        '有 ' + draftIds.length + ' 个话题里存在未发送的草稿，最早的一个是「' + name + '」。\n' +
-        '切换文件夹会丢弃这些草稿。要先去处理吗？',
-        { okText: '去看看', cancelText: '仍然切换' }
-      );
-      if (go) { select(draftIds[0]); return; }
-    }
-
-    enqueue(async () => { await connect(dir); });
-    return;
-  }
-  /* ① 同步段：只做无 IO 的事 */
-  const opts = { mode: 'readwrite' };
-  if (Store.dir) opts.startIn = Store.dir;
-
-  /* ② picker 必须是第一个 await */
-  let h;
-  try {
-    h = await window.showDirectoryPicker(opts);
-  } catch (e) {
-    if (e && e.name !== 'AbortError') toast('无法打开文件夹：' + (e.message || e));
-    return;
-  }
-
-  /* ③ 之后再弹确认框 */
-  if (Store.fs.pending > 0) {
-    const ok = await confirmDialog(
-      '还有写入未完成',
-      '当前有 ' + Store.fs.pending + ' 个磁盘写入任务在排队。\n' +
-      '现在切换文件夹会中断它们。',
-      { danger: true, okText: '仍然切换' }
-    );
-    if (!ok) return;
-  }
-  /* ★ 新增：草稿跳转 —— 放在确认框之前，因为切文件夹会丢 drafts */
-  const draftIds = draftTopicIds();
-  if (draftIds.length) {
-    const first = findNode(draftIds[0]);
-    const name  = first ? first.title : '（已删除的话题）';
-    const go = await confirmDialog(
-      '有未发送的草稿',
-      '有 ' + draftIds.length + ' 个话题里存在未发送的草稿，最早的一个是「' + name + '」。\n' +
-      '切换文件夹会丢弃这些草稿。要先去处理吗？',
-      { okText: '去看看', cancelText: '仍然切换' }
-    );
-    if (go) { select(draftIds[0]); return; }
-  }
-
-  enqueue(async () => { await connect(h); });
-}
 
 /* ============================================================
  * 启动流程
@@ -599,6 +367,12 @@ wireComposer({ renderAll });
 wireMerge({ renderAll });
 wireImage({ jumpToRow });
 wireBoot({ renderAll });
+wireLoader({
+  renderAll, select, enqueue, waitForIdle,
+  clearCaches: () => clearRuntimeCaches(),
+  resetMeta, toast, confirmDialog,
+});
+installExitGuard();
 export { boot };
 /* ============================================================
  * 启动

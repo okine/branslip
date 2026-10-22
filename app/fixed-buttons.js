@@ -17,7 +17,7 @@ import { I } from './icons.js';
 import { $ } from './utils.js';
 import { toast, confirmDialog, openMenu, toggleMenu } from './ui.js';
 import { clearRuntimeCaches } from './cacheClear.js';
-import { flushAllScroll } from './entries-jump.js';
+import { flushAllScroll, captureTopAnchor, settleTopAnchor, renderAroundEntry } from './entries-jump.js';
 import { waitForIdle } from './writer.js';
 import { pickItPage } from './pages.js';
 import { openMergeMenu } from './entries-merge.js';
@@ -61,15 +61,29 @@ const FIXED_BUTTONS = [
 async function clearCacheFlow() {
   const ok = await confirmDialog('清理缓存？', '部分内容需要重新加载。', { okText: '清理' });
   if (!ok) return;
-  /* 滚动位置属于磁盘状态（_话题.json 的 scroll），不能跟内存缓存一起丢：
-     先 flush 再等写盘队列落地，最后才清缓存。 */
+
+  /* 1) 先记住"窗口最上面那条记录 + 像素偏移"：清完分页窗口会重排，
+        单纯记住像素位置一定会跳。 */
+  const anchor = captureTopAnchor();
+  const nodeId = Store.ui.selectedId;
+
+  /* 2) 滚动位置属于磁盘状态（_话题.json 的 scroll），先写盘并等队列落地 */
   try {
     flushAllScroll();
     await waitForIdle();
   } catch (e) {}
-  clearRuntimeCaches();
+
+  /* 3) 清缓存；滚动记忆是会话状态，不是缓存，不清 */
+  clearRuntimeCaches({ scrollMemo: false });
   toast('缓存已清理，正在重新加载');
-  PORTS.renderAll?.();
+
+  /* 4) 恢复：优先把分页窗口切回"包含那条记录"的范围，再连对几帧 */
+  const node = Store.node(nodeId);
+  if (anchor && anchor.id && node && renderAroundEntry(node, anchor.id)) {
+    settleTopAnchor(anchor, 4);
+  } else {
+    PORTS.renderAll?.();
+  }
 }
 
 /* 「更多」菜单：每次点都重新取文件夹名，保持是最新的 */
@@ -95,9 +109,7 @@ export function initFixedButtons(ports) {
   const tb = document.getElementById('toolbar');
   if (!tb) return;
 
-  /* 构建标记：控制台看一眼就知道跑的是不是新包 */
-  window.__SH_BUILD = '2026-10-22 20:10 · toolbar 4+more';
-  console.log('[时枝笺]', window.__SH_BUILD);
+
 
   tb.innerHTML = FIXED_BUTTONS.map(it =>
     '<button type="button" class="tb-btn" id="' + it.id + '" title="' + it.title + '">' +

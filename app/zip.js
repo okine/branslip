@@ -19,7 +19,7 @@
 
 import { Store } from './store.js';
 import { Storage } from './storage.js';
-import { invoke } from './platform.js';
+import { invoke, PLATFORM } from './platform.js';
 import { toast } from './ui.js';
 import { pickDirectory } from './picker.js';
 import { enqueue } from './writer.js';
@@ -154,7 +154,7 @@ export async function exportZipFlow(btn) {
 
   /* Android 先选目标目录：这是纯 UI 交互，不能放在写队列里干等 */
   let androidDir = null;
-  if (Storage.isTauri && Storage.isAndroid) {
+  if (PLATFORM.isAndroid) {
     androidDir = await pickDirectory({
       start: '/storage/emulated/0/Download',
       title: '导出到哪个文件夹',
@@ -170,10 +170,10 @@ export async function exportZipFlow(btn) {
       const fname = '时枝笺-' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) +
         '-' + p(d.getHours()) + p(d.getMinutes()) + '.zip';
 
-      if (Storage.isTauri) {
+      if (PLATFORM.isTauri) {
         let dir = null, name = fname;
 
-        if (Storage.isAndroid) {
+        if (PLATFORM.isAndroid) {
           /* Android 的系统「保存」对话框只会返回 content:// URI，
              write_bytes 要的是绝对路径 —— 用上面选好的目录。 */
           dir = androidDir;

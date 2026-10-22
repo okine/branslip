@@ -15,6 +15,7 @@
  */
 
 import { Storage } from './storage.js';
+import { PLATFORM } from './platform.js';
 
 /* .tmp 的完整性凭证。
    只有以此结尾，才说明写入过程完整走完了。
@@ -41,7 +42,7 @@ export async function atomicWriteText(dir, name, text) {
    // ★ 在写入前清洗
    const cleanText = sanitizeUTF8(text);
   /* Tauri 分支 */
-  if (Storage.isTauri) {
+  if (PLATFORM.isTauri) {
     await Storage.writeText(dir, name, cleanText);
     return;
   }
@@ -80,7 +81,7 @@ export async function atomicWriteText(dir, name, text) {
  */
 export async function recoverTempFiles(dir) {
   if (!dir) return 0;
-  if (Storage.isTauri) return 0;
+  if (PLATFORM.isTauri) return 0;
 
   let recovered = 0;
   const items = await Storage.listEntries(dir);

@@ -32,6 +32,7 @@ export const TRASH_MAX  = 200;
 export const TRASH_DIR     = '_trash';   /* 新 */
 const        TRASH_DIR_OLD = '.trash';   /* 旧，仅用于兼容读 */
 import { atomicWriteText,  } from './writeSecurity.js';
+import { PLATFORM } from './platform.js';
 /* 兼容旧调用点 —— theme.js / tree-ops.js / loader.js / boot.js /
    import-runtime.js 继续从 io.js 拿这两个函数。
    等所有 io-* 拆分做完，再统一把 import 路径改成 './writeSecurity.js'。 */
@@ -152,7 +153,7 @@ export async function uniqueName(parentDir, base) {
 
 export async function moveDir(src, dstParent, name) {
   /* ── Tauri：一步 rename，不用逐文件复制 ── */
-  if (Storage.isTauri) {
+  if (PLATFORM.isTauri) {
     const to = await Storage.moveDirTo(src, dstParent, name);
     return to;
   }
@@ -200,7 +201,7 @@ export async function resolveFile(dir, relPath) {
      调用方都只用 .getFile()，返回 Blob 即可。
      （File System Access API 返回的 File 是 Blob 的子类，
       URL.createObjectURL 和 Storage.writeBlob 都能吃） */
-  if (Storage.isTauri) {
+  if (PLATFORM.isTauri) {
     return {
       async getFile() {
         return Storage.getFile(dir, segs.join('/'));

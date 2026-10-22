@@ -236,3 +236,15 @@ export const Store = {
   addEntry, insertSorted, removeEntry,
 };
 
+
+/* 有未发送草稿的话题 id（按写入顺序）。
+   草稿表在 Store.ui.drafts；textarea 里可能有还没回写的输入，补一道保险。 */
+export function draftTopicIds() {
+  const ids = new Set(_state.ui.drafts.keys());
+  const cur = _state.ui.selectedId;
+  if (typeof document !== 'undefined') {
+    const ta = document.querySelector('#inputArea');
+    if (cur && ta && String(ta.value || '').trim()) ids.add(cur);
+  }
+  return [...ids];
+}

@@ -16,14 +16,14 @@
 
 import { $, esc } from './utils.js';
 import { I } from './icons.js';
-import { Store } from './store.js';
+import { Store, draftTopicIds } from './store.js';
 import { Storage } from './storage.js';
 import { PLATFORM, invoke } from './platform.js';
 import { installMathOverflowWatcher } from './md.js';
-import { findNode, findByPath, pOf, stats } from './tree-utils.js';
+import { findNode, findByPath, pOf, stats, collapseAll } from './tree-utils.js';
 import { recoverTempFiles } from './writeSecurity.js';
 import { scanChildren } from './loader.js';
-import { setStatus, markFsReady } from './writer.js';
+import { setStatus, markFsReady, enqueue } from './writer.js';
 import { clearRuntimeCaches } from './cacheClear.js';
 import { resetMeta } from './meta-row.js';
 import { select } from './tree.js';
@@ -88,17 +88,7 @@ export function savePrefs() {
 }
 
 /* ---------- 折叠全部 ---------- */
-
-export function collapseAll() {
-  const rec = (node, parentKey) => {
-    for (const c of node.children) {
-      const key = parentKey ? parentKey + '\u0001' + c.title : c.title;
-      if (c.children.length) Store.collapsed.add(key);
-      rec(c, key);
-    }
-  };
-  rec(Store.root, '');
-}
+/* 实现在 tree-utils.js（loader 重扫也要用，避免 boot ↔ loader 循环 import） */
 
 /* ---------- 启动页 ---------- */
 
@@ -139,7 +129,7 @@ export async function connect(h) {
 
 async function connectInner(h) {
   /* ── Tauri 分支：h 是路径字符串 ── */
-  if (Storage.isTauri) {
+  if (PLATFORM.isTauri) {
     Store.setDir(h);
     try { localStorage.setItem('shizhijian.dir', h); } catch (e) {}
 
@@ -280,11 +270,11 @@ async function requestConnect(h) {
 
 $('#gatePick').addEventListener('click', async () => {
   /* ── Tauri 分支 ── */
-  if (Storage.isTauri) {
+  if (PLATFORM.isTauri) {
     let dir;
     try {
       /* Android 没有系统文件夹选择器 → 应用内目录浏览器（见 chooseAndroidDir） */
-      if (Storage.isAndroid) {
+      if (PLATFORM.isAndroid) {
         dir = await chooseAndroidDir();
       } else {
         dir = await invoke('plugin:dialog|open', {
@@ -332,7 +322,7 @@ export async function boot() {
   history.replaceState({ root: true }, '');
 
   /* ── Tauri 分支：从 localStorage 读上次路径 ── */
-  if (Storage.isTauri) {
+  if (PLATFORM.isTauri) {
     let dir = null;
     try { dir = localStorage.getItem('shizhijian.dir'); } catch (e) {}
     if (dir) {
@@ -361,4 +351,64 @@ export async function boot() {
     btn._h = h;
     btn.innerHTML = I.folder + '<span>继续使用「' + esc(h.name) + '」</span>';
   }
+}
+/* ---------- 更换存储文件夹 ----------
+ * 桌面 / Web：系统选择器；Android：应用内目录浏览器（系统没有选目录对话框）。
+ * 所有确认（排队写入 / 未发送草稿）都在这里，app.js 只负责把它接给按钮。
+ */
+export async function changeFolder() {
+  let dir = null;
+
+  if (PLATFORM.isTauri) {
+    try {
+      if (PLATFORM.isAndroid) {
+        dir = await chooseAndroidDir();
+        if (!dir) return;
+        if (Store.dir === dir) { toast('已经是这个文件夹了：' + dir); return; }
+      } else {
+        dir = await invoke('plugin:dialog|open', {
+          options: { directory: true, multiple: false, title: '选择存储文件夹' },
+        });
+      }
+    } catch (e) {
+      if (e && e.name !== 'AbortError') toast('无法打开文件夹：' + (e.message || e));
+      return;
+    }
+    if (!dir) return;
+  } else {
+    const opts = { mode: 'readwrite' };
+    if (Store.dir) opts.startIn = Store.dir;
+    try {
+      dir = await window.showDirectoryPicker(opts);
+    } catch (e) {
+      if (e && e.name !== 'AbortError') toast('无法打开文件夹：' + (e.message || e));
+      return;
+    }
+    if (!dir) return;
+  }
+
+  if (Store.fs.pending > 0) {
+    const ok = await confirmDialog(
+      '还有写入未完成',
+      '当前有 ' + Store.fs.pending + ' 个磁盘写入任务在排队。\n' +
+      '现在切换文件夹会中断它们。',
+      { danger: true, okText: '仍然切换' }
+    );
+    if (!ok) return;
+  }
+
+  const drafts = draftTopicIds();
+  if (drafts.length) {
+    const first = findNode(drafts[0]);
+    const name = first ? first.title : '（已删除的话题）';
+    const go = await confirmDialog(
+      '有未发送的草稿',
+      '有 ' + drafts.length + ' 个话题里存在未发送的草稿，最早的一个是「' + name + '」。\n' +
+      '切换文件夹会丢弃这些草稿。要先去处理吗？',
+      { okText: '去看看', cancelText: '仍然切换' }
+    );
+    if (go) { select(drafts[0]); return; }
+  }
+
+  enqueue(async () => { await connect(dir); });
 }

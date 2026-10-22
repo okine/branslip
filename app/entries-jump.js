@@ -48,12 +48,98 @@ let loadingEarlier = false;
 let loadingLater = false;
 let lastIdleLoadAt = 0;
 let earlierIO = null;
+
+/* 调试探针：控制台里 window.__earlierAlive 看观察器是否挂着 */
+if (typeof window !== 'undefined') {
+  Object.defineProperty(window, '__earlierAlive', { get: () => !!earlierIO });
+}
 let laterIO = null;
 
 /* ---------- 滚动位置记忆 / 持久化 ---------- */
 const SCROLL_SAVE_MS = 2500;
 let scrollSaveTimer = null;
 const scrollDirty = new Set();
+/* 每个话题的顶部锚点（内存里，flush 时一起落盘） */
+const anchorMemo = new Map();
+
+/* ---------- 手动排查工具 ----------
+ * 自动加载只靠 armLoadEarlier 里的 IntersectionObserver（root=viewport）。
+ * 这里保留一个手动入口，控制台可调：window.__SZJ.maybeLoadEarlier(true) */
+
+/**
+ * 还有更早的记录、并且"哨兵已经在可视区里" → 加载一批。
+ *
+ * 不再靠 scrollTop 阈值：不同宿主里真正滚动的是不同元素（网页/桌面/手机
+ * 都可能不同），scrollTop 会给出误导性的数字。直接问 DOM：
+ * 哨兵 #loadEarlier 现在是否落在 #entriesScroll 的可视矩形里。
+ *
+ * 返回状态字符串，方便控制台直接看卡在哪：
+ *   'no-dom' / 'merged' / 'no-topic' / 'all-loaded' /
+ *   'not-visible' / 'cooldown' / 'no-node' / 'busy' / 'loaded(<新 loadedStart>)'
+ */
+let lastAutoLoadAt = 0;
+let prevSentinelTop = null;      /* 上次加载时哨兵的屏幕位置，用来判断"用户又往上滑了" */
+const AUTO_LOAD_COOLDOWN_MS = 350;
+
+/**
+ * @param {boolean} [force] 由滚动事件判定"已经到顶"时传 true —— 跳过几何判断。
+ */
+export function maybeLoadEarlier(force) {
+  if (typeof document === 'undefined') return 'no-dom';
+  if (Store.ui.merged) return 'merged';
+  const id = Store.ui.selectedId;
+  if (!id) return 'no-topic';
+  if (Store.ui.loadedStart <= 0) return 'all-loaded';
+
+  const n = Store.node(id);
+  if (!n) return 'no-node';
+
+  const scEl = document.getElementById('entriesScroll');
+  const sentinel = document.getElementById('loadEarlier');
+
+  /* 可视矩形：窗口 ∩ 列表容器。任一层裁掉都算"看不见" */
+  const scRect = scEl ? scEl.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
+  const clipTop = Math.max(0, scRect.top);
+  const clipBottom = Math.min(window.innerHeight, scRect.bottom || window.innerHeight);
+
+  let visible;
+  const sRect = sentinel ? sentinel.getBoundingClientRect() : null;
+  if (force) {
+    visible = true;                       /* 滚动事件已经证明到顶了，几何不可信 */
+  } else if (sRect) {
+    visible = sRect.top < clipBottom - 8 && sRect.bottom > clipTop;
+  } else {
+    /* 哨兵丢了（DOM 被重绘）：看第一条记录是否已经顶到可视区上沿 */
+    const first = document.querySelector('#entries .entry-row');
+    if (!first) return 'no-sentinel';
+    visible = first.getBoundingClientRect().top >= clipTop - 4;
+  }
+  if (!visible) return 'not-visible';
+
+  /* 只在"用户又往上滑了一点"时才继续加载：
+     加载完我们会补偿滚动，哨兵在屏幕上位置不变；
+     若不加这道判断，会每 350ms 自动吃 40 条，几万条直接喂爆 DOM。 */
+  if (!force && sRect && prevSentinelTop != null && sRect.top <= prevSentinelTop + 1) {
+    return 'need-scroll-up';
+  }
+
+  /* 冷却：一次滚动手势只加载一批 */
+  const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  if (now - lastAutoLoadAt < AUTO_LOAD_COOLDOWN_MS) return 'cooldown';
+  lastAutoLoadAt = now;
+  if (sRect) prevSentinelTop = sRect.top;
+
+  const before = Store.ui.loadedStart;
+  loadEarlier(n);
+  return Store.ui.loadedStart < before
+    ? 'loaded(' + Store.ui.loadedStart + ')'
+    : 'busy';
+}
+
+/* 自动触发只用 IntersectionObserver（见 armLoadEarlier）。
+   之前那套"滚动事件 + 几何测量"已经移除：滚动里 getBoundingClientRect
+   会强制同步布局（[Violation] Forced reflow），而且和真实滚动容器容易对不上。
+   maybeLoadEarlier 保留为控制台手动排查用。 */
 
 export function rememberScroll(nodeId, top) {
   if (!nodeId || !Number.isFinite(top)) return;
@@ -65,6 +151,13 @@ export function rememberScroll(nodeId, top) {
   if (scrollSaveTimer) clearTimeout(scrollSaveTimer);
   scrollSaveTimer = setTimeout(() => {
     scrollSaveTimer = null;
+    /* ★ 落盘前先把锚点抓下来：只更新像素 top 会让锚点停留在旧位置，
+       下次恢复时"锚点优先"反而会跳回更早的地方。 */
+    const cur = Store.ui.selectedId;
+    if (cur) {
+      const a = captureTopAnchor();
+      if (a && a.id) anchorMemo.set(cur, a);
+    }
     flushScroll(Store.ui.selectedId);
   }, SCROLL_SAVE_MS);
   if (scrollSaveTimer && typeof scrollSaveTimer.unref === 'function') scrollSaveTimer.unref();
@@ -80,6 +173,68 @@ export function recallScroll(nodeId, node) {
   return null;
 }
 
+/* ---------- 顶部锚点：比"像素位置"更稳 ----------
+ * 清缓存 / 重新分页后，同一条记录可能落在不同的 scrollTop 上，
+ * 所以额外记「窗口最上面那条记录的 id + 它离视口上沿的像素偏移」。
+ */
+export function captureTopAnchor() {
+  const sc = $('#entriesScroll'), box = $('#entries');
+  if (!sc || !box) return null;
+  const scTop = sc.getBoundingClientRect().top;
+  for (const el of box.children) {
+    if (!el.classList.contains('entry-row')) continue;
+    const r = el.getBoundingClientRect();
+    if (r.bottom > scTop + 2) {
+      return { id: el.dataset.eid || '', off: Math.round(r.top - scTop) };
+    }
+  }
+  return null;
+}
+
+export function restoreTopAnchor(anchor) {
+  if (!anchor || !anchor.id) return false;
+  const sc = $('#entriesScroll'), box = $('#entries');
+  if (!sc || !box) return false;
+  let el = null;
+  try {
+    el = box.querySelector('.entry-row[data-eid="' + anchor.id + '"]');
+  } catch (e) { return false; }
+  if (!el) return false;
+  const scTop = sc.getBoundingClientRect().top;
+  const now = el.getBoundingClientRect().top - scTop;
+  const delta = now - (anchor.off || 0);
+  if (Math.abs(delta) > 1) sc.scrollTop += delta;
+  return true;
+}
+
+/**
+ * 连续几帧把锚点对齐。
+ * 一次对齐不够：图片/字体/懒渲染会陆续改变行高，恢复后前几帧位置还会漂。
+ * 用户一动手（pointerdown / wheel）立刻停手，不抢滚动。
+ */
+export function settleTopAnchor(anchor, frames) {
+  if (!anchor || !anchor.id) return;
+  const max = frames || 4;
+  let n = 0, cancelled = false;
+  const cancel = () => { cancelled = true; };
+  window.addEventListener('pointerdown', cancel, { once: true, passive: true });
+  window.addEventListener('wheel', cancel, { once: true, passive: true });
+  const tick = () => {
+    if (cancelled) return;
+    restoreTopAnchor(anchor);
+    if (++n >= max) return;
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+/** 离开某个话题之前把它的顶部锚点记下来 —— 只有 DOM 还是它的时候才抓得到。 */
+export function captureAnchorFor(nodeId) {
+  if (!nodeId) return;
+  const a = captureTopAnchor();
+  if (a && a.id) anchorMemo.set(nodeId, a);
+}
+
 export function flushScroll(nodeId) {
   const id = nodeId || Store.ui.selectedId;
   if (!id || !scrollDirty.has(id)) return;
@@ -88,11 +243,16 @@ export function flushScroll(nodeId) {
 
   const top = Store.getScrollMemo(id);
   if (top == null) { scrollDirty.delete(id); return; }
-  if (node.scroll && node.scroll.top === top) { scrollDirty.delete(id); return; }
+  const a = anchorMemo.get(id) || null;
+  const sameTop = node.scroll && node.scroll.top === top;
+  const sameAnchor = !a || (node.scroll && node.scroll.id === a.id && node.scroll.off === a.off);
+  if (sameTop && sameAnchor) { scrollDirty.delete(id); return; }
 
   scrollDirty.delete(id);
-  enqueue(() => updateTopicMeta(node, { scroll: { top } })).then(r => {
-    if (r.ok) node.scroll = { top };
+  const patch = { top };
+  if (a && a.id) { patch.id = a.id; patch.off = a.off; }
+  enqueue(() => updateTopicMeta(node, { scroll: patch })).then(r => {
+    if (r.ok) node.scroll = patch;
     else scrollDirty.add(id);   // 下次切换/隐藏时再试
   });
 }
@@ -115,6 +275,8 @@ export function flushAllScroll() {
   const s = $('#entriesScroll');
   if (id && s) {
     Store.setScrollMemo(id, s.scrollTop);
+    const a = captureTopAnchor();
+    if (a && a.id) anchorMemo.set(id, a);
     scrollDirty.add(id);
   }
   for (const nid of [...scrollDirty]) flushScroll(nid);
@@ -123,6 +285,7 @@ export function flushAllScroll() {
 export function clearScrollState() {
   if (scrollSaveTimer) { clearTimeout(scrollSaveTimer); scrollSaveTimer = null; }
   scrollDirty.clear();
+  anchorMemo.clear();
   Store.scrollMemo.clear();
 }
 
@@ -229,8 +392,9 @@ export function loadEarlier(n) {
   try {
     const box = $('#entries');
     const sc = $('#entriesScroll');
+    /* 哨兵只是"插入位置 + 文案"，缺了也要能加载 ——
+       它可能因为重绘/清缓存没了，但 loadedStart 仍然是有效的分页状态。 */
     const sentinel = $('#loadEarlier');
-    if (!sentinel) return;
     const end = Store.ui.loadedStart;
     const start = Math.max(0, end - PAGING.chunk);
     if (end === start) return;
@@ -252,10 +416,22 @@ export function loadEarlier(n) {
       idx++;
     }
 
-    sentinel.insertAdjacentHTML('beforebegin', h);
+    if (sentinel) {
+      /* ★ 哨兵必须永远待在列表最上面。
+         以前把新记录插在哨兵"前面"（beforebegin），每加载 40 条
+         哨兵就往内容深处下沉 40 行 —— 加载几十批后哨兵跑到内容底部，
+         滚到顶永远碰不到它，"加载一定条数后就再也加载不动"。
+         正确做法：先把哨兵扶回第一位，再把新记录插到它后面。 */
+      if (box.firstElementChild !== sentinel) box.insertBefore(sentinel, box.firstChild);
+      sentinel.insertAdjacentHTML('afterend', h);
+    } else {
+      box.insertAdjacentHTML('afterbegin', h);
+    }
     Store.ui.loadedStart = start;
-    if (start === 0) sentinel.remove();
-    else sentinel.textContent = '向上滚动加载更早的记录 · 还有 ' + start + ' 条';
+    if (sentinel) {
+      if (start === 0) sentinel.remove();
+      else sentinel.textContent = '向上滚动加载更早的记录 · 还有 ' + start + ' 条';
+    }
 
     if (!restoreScrollAnchor(sc, anchor)) {
       const newH = sc.scrollHeight;
@@ -319,17 +495,41 @@ export function clearLaterObs() {
   if (laterIO) { laterIO.disconnect(); laterIO = null; }
 }
 
-/* 哨兵观察器 —— 每次加载后都要重新挂 */
+/* 哨兵观察器 —— 每次加载后都要重新挂。
+   注意：回调里必须重新取"当前话题"，不能闭包着 arm 时的 node。
+   否则切换话题后旧的观察器会把新话题的哨兵绑到旧话题上，loadEarlier 永远
+   提前 return，"还有记录却加载不出来"。 */
 export function armLoadEarlier(node) {
   clearEarlierObs();
+  prevSentinelTop = null;       /* 换了视图，重新开始判断"有没有再往上滑" */
   const sentinel = document.getElementById('loadEarlier');
   if (!sentinel || !node) return;
+  const armedId = node.id;
   earlierIO = new IntersectionObserver(ents => {
-    if (!ents[0].isIntersecting) return;
+    if (!ents.some(e => e.isIntersecting)) return;
     clearEarlierObs();
-    loadEarlier(node);
-    if (document.getElementById('loadEarlier')) armLoadEarlier(node);
-  }, { root: document.getElementById('entriesScroll'), rootMargin: '200px 0px' });
+    try {
+      const cur = Store.node(Store.ui.selectedId);
+      if (!cur || cur.id !== armedId) return;      /* 视图已经换了，不自绑 */
+      loadEarlier(cur);
+    } catch (err) {
+      console.error('[loadEarlier] 出错', err);
+    } finally {
+      /* ★ 不管这次成没成，只要还有更早的记录就重新挂上观察器。
+         否则抛一次错/提前 return 就永久失去加载能力。 */
+      if (document.getElementById('loadEarlier')) {
+        const again = Store.node(Store.ui.selectedId);
+        if (again) armLoadEarlier(again);
+      }
+    }
+  }, {
+    /* root = viewport（null）：不管真正滚动的是窗口还是某个容器，
+       IntersectionObserver 都会把祖先的裁剪算进去，比盯某个元素稳。
+       rootMargin 提前 600px 预加载，滑到顶之前就开始取。 */
+    root: null,
+    rootMargin: '600px 0px',
+    threshold: 0,
+  });
   earlierIO.observe(sentinel);
 }
 
@@ -337,12 +537,15 @@ export function armLoadLater(node) {
   clearLaterObs();
   const sentinel = document.getElementById('loadLater');
   if (!sentinel || !node) return;
+  const armedId = node.id;
   laterIO = new IntersectionObserver(ents => {
-    if (!ents[0].isIntersecting) return;
+    if (!ents.some(e => e.isIntersecting)) return;
     clearLaterObs();
-    loadLater(node);
-    if (document.getElementById('loadLater')) armLoadLater(node);
-  }, { root: document.getElementById('entriesScroll'), rootMargin: '200px 0px' });
+    const cur = Store.node(Store.ui.selectedId);
+    if (!cur || cur.id !== armedId) return;        /* 视图已经换了，不自绑 */
+    loadLater(cur);
+    if (document.getElementById('loadLater')) armLoadLater(cur);
+  }, { root: null, rootMargin: '600px 0px', threshold: 0 });
   laterIO.observe(sentinel);
 }
 
@@ -374,6 +577,16 @@ export function scheduleIdleLoad(n) {
 }
 
 /* ---------- 跳转 ---------- */
+
+/** 只把分页窗口换成"包含这条记录"的样子，不闪烁、不强制对齐（清缓存恢复用）。 */
+export function renderAroundEntry(node, eid) {
+  if (!node || !eid) return false;
+  const row = document.querySelector('#entries .entry-row[data-eid="' + eid + '"]');
+  if (row) return true;                       // 已经在当前窗口里
+  if (typeof D.showAround !== 'function') return false;
+  D.showAround(node, eid);
+  return true;
+}
 
 export function jumpToRow(node, targetId) {
   if (!node) { toast('找不到那条记录'); return; }

@@ -166,8 +166,9 @@ function buildDocs() {
         const text = e.text || '';
         entries.push({
           e, node: n, doc,
-          text,
-          textLower: text.toLowerCase(),
+          /* 不再各存一份 text / textLower：
+             text 直接用 e.text（同一个字符串引用），小写版本按需算并进 LRU，
+             省掉"每条记录额外一份小写副本"的常驻内存。 */
           tags: tagsOf(text),
           hasImage: hasImage(text),
         });
@@ -183,7 +184,25 @@ function getDocs() {
   if (state.docs && state.docsRev === Store.dataRevision) return state.docs;
   state.docs = buildDocs();
   state.docsRev = state.docs.rev;
+  lowerCache.clear();
   return state.docs;
+}
+
+/* 小写文本的 LRU：只有被查询命中的记录才会驻留，最多 LOWER_CACHE_MAX 条 */
+const LOWER_CACHE_MAX = 2000;
+const lowerCache = new Map();
+function lowerOf(d) {
+  let s = lowerCache.get(d);
+  if (s != null) {
+    lowerCache.delete(d); lowerCache.set(d, s);   // 提到最近使用
+    return s;
+  }
+  s = ((d.e && d.e.text) || '').toLowerCase();
+  if (lowerCache.size >= LOWER_CACHE_MAX) {
+    lowerCache.delete(lowerCache.keys().next().value);
+  }
+  lowerCache.set(d, s);
+  return s;
 }
 
 /* ---------- 匹配与排序 ---------- */
@@ -214,13 +233,14 @@ function scoreTopic(titleLower, q) {
 
 function scoreEntry(d, q) {
   let score = 0;
-  for (const p of q.phrases) if (d.textLower.includes(p)) score += 220;
+  const low = lowerOf(d);
+  for (const p of q.phrases) if (low.includes(p)) score += 220;
   for (const t of q.terms) {
-    const n = d.textLower.split(t).length - 1;
+    const n = low.split(t).length - 1;
     score += Math.min(120, n * 18);
   }
   for (const tag of q.tags) if (d.tags.includes(tag)) score += 80;
-  score += Math.min(30, d.text.length / 120);
+  score += Math.min(30, ((d.e && d.e.text) || '').length / 120);
   return score;
 }
 
@@ -231,10 +251,11 @@ function entryMatches(d, q) {
   if (q.after != null && d.e.createdAt < q.after) return false;
   if (q.before != null && d.e.createdAt > q.before) return false;
   for (const tag of q.tags) if (!d.tags.includes(tag)) return false;
+  const low = lowerOf(d);
   for (const x of q.exclude) {
-    if (d.textLower.includes(x) || d.doc.titleLower.includes(x)) return false;
+    if (low.includes(x) || d.doc.titleLower.includes(x)) return false;
   }
-  return textMatches(d.textLower, q);
+  return textMatches(low, q);
 }
 
 function runQuery() {
@@ -368,7 +389,8 @@ function renderResults() {
       h += '<button class="res-row" data-search-idx="' + idx +
         '" data-goto="' + r.doc.node.id + '" data-goto-entry="' + r.doc.e.id + '">' +
         '<span style="color:var(--ink3);flex:none">' + I.pen + '</span>' +
-        '<span class="main"><span class="txt">' + snippetText(r.doc.text, q) + '</span>' +
+        '<span class="main"><span class="txt">' +
+          snippetText((r.doc.e && r.doc.e.text) || '', q) + '</span>' +
         '<span class="path">' + esc(r.doc.path) + ' · ' + fmtDay(r.doc.e.createdAt) + '</span>' +
         '</span></button>';
     }
