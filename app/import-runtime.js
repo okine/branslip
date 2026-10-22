@@ -33,6 +33,7 @@ import {
 import { sanitizeName, uniqueName, resolveFile, dirOf, writeOrder, writeMonthFile } from './io.js';
 import { atomicWriteText } from './writeSecurity.js';
 import { Store } from './store.js';
+import { invoke } from './platform.js';
 import { findNode, pathTitles } from './tree-utils.js';
 import { resetMeta } from './meta-row.js';
 
@@ -697,7 +698,7 @@ async function showImportConfirmDialog(source, count, ui) {
     md.querySelector('#pickPhotoBtn').addEventListener('click', async () => {
       try {
         if (Storage.isTauri) {
-          const dir = await window.__TAURI__.core.invoke('plugin:dialog|open', {
+          const dir = await invoke('plugin:dialog|open', {
             options: { directory: true, multiple: false, title: '选择图片文件夹' },
           });
           if (dir) {

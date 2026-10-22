@@ -28,6 +28,7 @@
 import { $, esc, badgeHTML } from './utils.js';
 import { I } from './icons.js';
 import { Store } from './store.js';
+import { invoke } from './platform.js';
 import {
  deleteOrphanAttachments
 } from './io.js';
@@ -183,7 +184,7 @@ async function openTopicFolder(n) {
   const dir = n && n._dir;
   if (!dir) { toast('话题目录还没准备好'); return; }
   try {
-    await window.__TAURI__.core.invoke('open_folder', { path: dir });
+    await invoke('open_folder', { path: dir });
   } catch (e) {
     toast('打开文件夹失败：' + ((e && e.message) || e));
   }
@@ -330,6 +331,10 @@ function hitTest(cx, cy) {
   dragCtx.drop = { targetId, pos };
 }
 
+/* 触屏拖拽要按住这么久才算"要拖"（手指滑走就当没按） */
+const DRAG_HOLD_MS = 1500;
+let dragHoldTimer = null;
+
 treeBox.addEventListener('pointerdown', e => {
   if (e.button !== 0) return;
   const h = e.target.closest('.handle'); if (!h) return;
@@ -346,15 +351,39 @@ treeBox.addEventListener('pointerdown', e => {
     id: row.dataset.id, row, sx: e.clientX, sy: e.clientY,
     pointerType: e.pointerType,          // ★ 记下来，给阈值判断用
     started: false, drop: null,
+    /* 触屏要长按 DRAG_HOLD_MS 才进入拖拽，否则手指一滑就把节点拖走了 */
+    armed: e.pointerType !== 'touch',
     offX: e.clientX - row.getBoundingClientRect().left,
     offY: e.clientY - row.getBoundingClientRect().top,
   };
+  clearTimeout(dragHoldTimer);
+  if (e.pointerType === 'touch') {
+    dragHoldTimer = setTimeout(() => {
+      if (!dragCtx || dragCtx.started) return;
+      dragCtx.armed = true;
+      dragCtx.row.classList.add('drag-armed');
+      if (navigator.vibrate) { try { navigator.vibrate(12); } catch (err) {} }
+    }, DRAG_HOLD_MS);
+  }
   try { row.setPointerCapture(e.pointerId); } catch (err) {}
 });
+
+/* 松手就清掉长按计时，并把"已武装"的视觉标记摘掉 */
+window.addEventListener('pointerup', () => {
+  clearTimeout(dragHoldTimer);
+  if (dragCtx && dragCtx.row) dragCtx.row.classList.remove('drag-armed');
+}, true);
 
 window.addEventListener('pointermove', e => {
   if (!dragCtx) return;
   if (!dragCtx.started) {
+    /* 触屏：长按没到点就不算拖拽；手指先滑走 = 放弃这次拖动 */
+    if (dragCtx.pointerType === 'touch' && !dragCtx.armed) {
+      if (Math.hypot(e.clientX - dragCtx.sx, e.clientY - dragCtx.sy) > 8) {
+        clearTimeout(dragHoldTimer);
+      }
+      return;
+    }
     /* 手指比鼠标抖，阈值放宽。 */
     const th = dragCtx.pointerType === 'touch' ? 10 : 5;
     if (Math.hypot(e.clientX - dragCtx.sx, e.clientY - dragCtx.sy) < th ) return;

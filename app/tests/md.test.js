@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { parseEntries, splitByImage, renderMD,
+  renderTextParts, hasImage, stripImages,
   isReplyMessage, topicRefId, normalizeTopicRefId, } from '../md.js';
 import { stampForWrite, entryBlockId } from '../format.js';
 
@@ -86,6 +87,29 @@ test('splitByImage 连续两张图', () => {
   assert.equal(parts.length, 2);
   assert.equal(parts[0].img, 'a.png');
   assert.equal(parts[1].img, 'b.png');
+});
+
+test('renderTextParts 统一图片/文本遍历并报告 hasImg', () => {
+  const r = renderTextParts(
+    '看图 ![](a.png) **重点**',
+    p => '<img data-src="' + p.img + '">',
+    t => '<b>' + t + '</b>'
+  );
+  assert.equal(r.hasImg, true);
+  assert.match(r.html, /data-src="a\.png"/);
+  assert.match(r.html, /<b> \*\*重点\*\*<\/b>/);
+});
+
+test('renderTextParts 空内容回落到 etext 壳', () => {
+  const r = renderTextParts('   ', () => '', () => '');
+  assert.equal(r.hasImg, false);
+  assert.equal(r.html, '<span class="etext"></span>');
+});
+
+test('hasImage / stripImages 对同一套图片语法生效', () => {
+  assert.equal(hasImage('前 ![](a.png) 后'), true);
+  assert.equal(hasImage('没有图片'), false);
+  assert.equal(stripImages('前 ![](a.png) 后').trim(), '前   后'.trim());
 });
 
 /* ---------- renderMD ---------- */

@@ -40,6 +40,7 @@ export function fakeEl() {
     clientWidth: 0,
     classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
     appendChild() {},
+    insertBefore() {},
     remove() {},
     insertAdjacentHTML() {},
     replaceWith() {},
@@ -112,6 +113,13 @@ if (!globalThis.window) {
     removeEventListener() {},
     innerWidth: 1280,
     innerHeight: 800,
+    /* fixed-buttons.js 用 matchMedia('(max-width:860px)') 决定工具栏放哪 */
+    matchMedia() {
+      return {
+        matches: false, media: '',
+        addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {},
+      };
+    },
   };
 }
 

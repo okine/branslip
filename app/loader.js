@@ -47,6 +47,9 @@ export async function scanDir(dir, name) {
   const node = {
     id: uid(), title: name, _name: name, _dir: dir,
     entries: [], children: [], _hasOldFile: false,
+    /* 本次扫描中"读失败 / 解析失败"的月份文件名。写盘侧据此拒绝删除：
+       内存里没有该月，不代表盘上没有（见 io.writeMonthFile）。 */
+    _loadErrors: new Set(),
   };
 
   const jobs = [];
@@ -62,6 +65,9 @@ export async function scanDir(dir, name) {
     node.source   = meta.source   || null;    // ★
     node.sourceId = meta.sourceId || null;    // ★
     node.intro    = typeof meta.intro === 'string' ? meta.intro : '';
+    /* 简介的创建时间 / 最后更新时间（都在 _话题.json 里） */
+    node.introCreatedAt = typeof meta.introCreatedAt === 'string' ? meta.introCreatedAt : null;
+    node.introAt  = typeof meta.introAt === 'string' ? meta.introAt : null;
     if (meta.scroll && Number.isFinite(meta.scroll.top)) {
       node.scroll = { top: meta.scroll.top };
     }
@@ -76,11 +82,17 @@ export async function scanDir(dir, name) {
         try {
           const txt = await Storage.readText(dir, fn);
           const parsed = parseEntries(txt);
-          if (!parsed.length && txt.trim() && !/^#\s/.test(txt.trim())) {
-            console.warn('[scanDir] 文件有内容但解析出 0 条:', node.title, fn, txt.slice(0, 200));
+          /* 有 "## " 条目行却解析出 0 条 = 解析失败（不是空月份）。
+             旧判断用 /^#\s/，而月份文件第一行恒为 "# 话题 · YYYY-MM"，
+             所以这条告警从未触发过。 */
+          if (!parsed.length && /^##\s/m.test(txt)) {
+            node._loadErrors.add(fn);
+            console.error('[scanDir] 有条目行但解析出 0 条，已标记为不可删除:',
+              node.title, fn, txt.slice(0, 200));
           }
           node.entries.push(...parsed);
         } catch (e) {
+          node._loadErrors.add(fn);
           console.error('[scanDir] 读取失败:', node.title, fn, e);
         }
       })());

@@ -128,39 +128,34 @@ export async function openTrashPage() {
         if (!await confirmDialog('清空回收站', '此操作无法撤销。',
             { danger: true, okText: '清空' })) return;
 
-        /* 1. 话题级：_trash/ 下的目录。
-           注意 .trash，删不掉时要把失败数出来，别静默吞掉。 */
+        /* 1. 话题级 + 2. 消息级，都放进同一个串行写队列。 */
         let wanted = 0, removed = 0, dirErr = null;
-        try {
-          const td = await getTrashDir();
-          const items = await Storage.listEntries(td);
-          for (const { name, kind } of items) {
-            if (kind !== 'directory') continue;
-            wanted++;
-            try { await Storage.removeEntry(td, name, { recursive: true }); removed++; }
-            catch (e) { dirErr = dirErr || e; }
+        const r = await enqueue(async () => {
+          try {
+            const td = await getTrashDir();
+            const items = await Storage.listEntries(td);
+            for (const { name, kind } of items) {
+              if (kind !== 'directory') continue;
+              wanted++;
+              try { await Storage.removeEntry(td, name, { recursive: true }); removed++; }
+              catch (e) { dirErr = dirErr || e; }
+            }
+          } catch (e) {
+            /* 只有真的看到过话题目录、或错误不是“目录不存在”时才算失败。 */
+            if (wanted > 0 || !isMissingEntryError(e)) dirErr = e;
           }
-        } catch (e) {
-          /* 只有真的看到过话题目录、或错误不是“目录不存在”时才算失败。
-             否则“只删过消息、没有 _trash/”会被误报成清空失败。 */
-          if (wanted > 0 || !isMissingEntryError(e)) dirErr = e;
-        }
 
-        /* 2. 消息级：整份 _回收站.json 清空。
-           先落盘再改内存 —— 写失败时保持原状，别让界面和磁盘说两套话。 */
-        let msgErr = null;
-        if (arr.length) {
-          try { await writeTrash([]); }
-          catch (e) { msgErr = e; }
-        }
+          /* 先落盘再改内存 —— 写失败时保持原状。 */
+          if (arr.length) await writeTrash([]);
+        });
 
-        if (msgErr) {
-          /* 消息清不掉：arr 保持原样，话题那半已经删了，如实刷新 */
+        if (!r.ok) {
           dirs.length = 0;
           redraw();
-          toast('消息清空失败：' + (msgErr.message || msgErr));
+          toast('清空回收站失败：' + ((r.err && r.err.message) || r.err || '未知错误'));
           return;
         }
+
         arr.length = 0;
         dirs.length = 0;
         redraw();
@@ -188,14 +183,15 @@ export async function openTrashPage() {
           toast('找不到对应的回收站条目，请关闭后重新打开回收站');
           return;
         }
-        try {
-          arr.splice(i, 1);
-          await writeTrash(arr);
-        } catch (e) {
-          console.error('[trash] 写入失败:', e);
-          toast('写入失败：' + (e.message || e));
+        arr.splice(i, 1);
+        const r = await enqueue(() => writeTrash(arr));
+        if (!r.ok) {
+          console.error('[trash] 写入失败:', r.err);
+          toast('写入失败：' + ((r.err && r.err.message) || r.err || '未知错误'));
           arr.length = 0;
           arr.push(...await readTrash());
+          redraw();
+          return;
         }
         redraw();
         toast('已彻底删除');
@@ -256,36 +252,42 @@ export async function openTrashPage() {
         const card = tr.closest('.tp-card');
         const name = card && card.dataset.tdir;
         if (!name) return;
-        try {
-          const td  = await getTrashDir();
+        let freshTitle = '';
+        const r = await enqueue(async () => {
+          const td = await getTrashDir();
           const src = await Storage.getDir(td, name);
           let meta = null;
           try {
             const txt = await Storage.readText(src, '_回收信息.json');
             meta = JSON.parse(txt);
           } catch (e) {}
-          if (!meta) { toast('缺少位置信息，无法自动恢复'); return; }
+          if (!meta) throw new Error('缺少位置信息，无法自动恢复');
+
           const segs = (meta.parentPath || '').split('/').map(s => s.trim()).filter(Boolean);
-          let pnode = segs.length ? findByPath(segs.join('\u0001')) : Store.root;
-          if (!pnode) { toast('原父话题已不存在，无法自动恢复'); return; }
+          const pnode = segs.length ? findByPath(segs.join('\u0001')) : Store.root;
+          if (!pnode) throw new Error('原父话题已不存在，无法自动恢复');
+
           const pdir = dirOf(pnode);
           const finalName = await uniqueName(pdir, meta.originalName || name);
           const restored = await moveDir(src, pdir, finalName);
           try { await Storage.removeEntry(restored, '_回收信息.json'); } catch (e) {}
           try { await Storage.removeEntry(td, name, { recursive: true }); } catch (e) {}
+
           const fresh = await scanDir(restored, finalName);
+          freshTitle = fresh.title;
           pnode.children.push(fresh);
           Store.rebuildIndex();
-          enqueue(() => writeOrder(pnode));
-          D.renderAll();
-          const i = dirs.findIndex(x => x.name === name);
-          if (i >= 0) dirs.splice(i, 1);
-          redraw();
-          toast('已恢复话题「' + fresh.title + '」');
-        } catch (e) {
-          console.error(e);
-          toast('恢复失败：' + (e.message || e));
+          await writeOrder(pnode);
+        });
+        if (!r.ok) {
+          toast('恢复失败：' + ((r.err && r.err.message) || r.err || '未知错误'));
+          return;
         }
+        D.renderAll();
+        const i = dirs.findIndex(x => x.name === name);
+        if (i >= 0) dirs.splice(i, 1);
+        redraw();
+        toast('已恢复话题「' + (freshTitle || name) + '」');
         return;
       }
 
@@ -297,10 +299,14 @@ export async function openTrashPage() {
         if (!name) return;
         if (!await confirmDialog('彻底删除话题「' + name + '」', '此操作无法撤销。',
             { danger: true, okText: '删除' })) return;
-        try {
+        const r = await enqueue(async () => {
           const td = await getTrashDir();
           await Storage.removeEntry(td, name, { recursive: true });
-        } catch (e) {}
+        });
+        if (!r.ok) {
+          toast('彻底删除失败：' + ((r.err && r.err.message) || r.err || '未知错误'));
+          return;
+        }
         const i = dirs.findIndex(x => x.name === name);
         if (i >= 0) dirs.splice(i, 1);
         redraw();
@@ -352,19 +358,39 @@ export async function doTrashRestore(item, topicId) {
   });
   const e = r.entry;
 
+  /* ★ 把冻结的时间串带回来：createdAt 不变、_writeStamp 也不变，
+     这样 entryBlockId 还是原来那个，所有 [[~tid#^bid]] 引用继续有效。
+     Mutate.insertSorted 只认自己的字段，所以这里补一步并重建 blockIndex。 */
+  if (item.writeStamp) {
+    const oldBid = Mutate.entryBlockId(e);
+    e._writeStamp = item.writeStamp;
+    Store.reindexEntry(e, node, oldBid);
+  }
+
   if (item.pinned) {
     Mutate.addPin(node, e);
-    enqueue(() => writePins(node));
   }
-  enqueue(() => persistMonthOf(node, e.createdAt));
 
-  /* 从回收站里删掉这条 —— 用和 draw() 同一套 key（id 优先，退回 deletedAt） */
-  const k0 = item.id || item.deletedAt || '';
-  const cur = await readTrash();
-  const k = cur.findIndex(x => (x.id || x.deletedAt || '') === k0);
-  if (k >= 0) {
-    cur.splice(k, 1);
-    await writeTrash(cur);
+  const wr = await enqueue(async () => {
+    if (item.pinned) await writePins(node);
+    await persistMonthOf(node, e.createdAt);
+
+    /* 从回收站里删掉这条 —— 用和 draw() 同一套 key（id 优先，退回 deletedAt） */
+    const k0 = item.id || item.deletedAt || '';
+    const cur = await readTrash();
+    const k = cur.findIndex(x => (x.id || x.deletedAt || '') === k0);
+    if (k >= 0) {
+      cur.splice(k, 1);
+      await writeTrash(cur);
+    }
+  });
+  if (!wr.ok) {
+    /* 写盘失败 → 撤掉刚插入的内存记录，避免界面里出现一条磁盘上没有的记录 */
+    Store.removeEntry(node, e.id);
+    if (Store.ui.selectedId === node.id) { renderEntries(); updateTopCount(); }
+    renderPins();
+    toast('恢复写盘失败：' + ((wr.err && wr.err.message) || wr.err || '未知错误'));
+    return false;
   }
 
   if (Store.ui.selectedId === node.id) { renderEntries(); updateTopCount(); }

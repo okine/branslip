@@ -116,3 +116,23 @@ test('setDir 更新 dir 句柄', () => {
   assert.equal(Store.dir, fake);
   Store.setDir(null);          // 还原
 });
+
+test('dataRevision 在 rebuild / 增删 / 显式 touch 时递增', () => {
+  const n = mk('R', 'R');
+  Store.root.children = [n];
+  const a = Store.dataRevision;
+  Store.rebuildIndex();
+  assert.ok(Store.dataRevision > a);
+
+  const b = Store.dataRevision;
+  const e = Store.addEntry(n, { id: 'rev1', text: 'x', createdAt: 1 });
+  assert.ok(Store.dataRevision > b);
+
+  const c = Store.dataRevision;
+  Store.touchData();
+  assert.ok(Store.dataRevision > c);
+
+  const d = Store.dataRevision;
+  Store.removeEntry(n, e.id);
+  assert.ok(Store.dataRevision > d);
+});

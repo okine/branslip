@@ -24,7 +24,7 @@ import { I } from './icons.js';
 import { Store } from './store.js';
 
 import { dayKey, fmtDay } from './format.js';
-import { renderMDCached, splitByImage, isReplyMessage,isRelatedMessage } from './md.js';
+import { renderMDCached, renderTextParts, parseRelevanceHeader, stripQuoteHeader, isReplyMessage, isRelatedMessage } from './md.js';
 
 import { renderMetaRow } from './meta-row.js';
 /* ---------- 模块级状态 ---------- */
@@ -44,16 +44,12 @@ export function clearLastAdded() { lastAdded = null; }
 /* 渲染 entry 正文（图 + 文本）。3 处调用点共用。
    返回 { html, hasImg } —— hasImg 用于给 .entry 加 .has-img 类。 */
 export function renderEntryBody(e) {
-  const parts = splitByImage(e.text);
-  const hasImg = parts.some(p => p.img);
-  let body = '';
-  for (const p of parts) {
-    if (p.img) body += '<img class="eimg" data-src="' + esc(p.img) +
-                       '" alt="' + esc(p.alt || '') + '">';
-    else if (p.t && p.t.trim())
-      body += '<span class="etext">' + renderMDCached(p.t) + '</span>';
-  }
-  return { html: body || '<span class="etext"></span>', hasImg };
+  return renderTextParts(
+    e.text,
+    p => '<img class="eimg" data-src="' + esc(p.img) +
+         '" alt="' + esc(p.alt || '') + '">',
+    t => '<span class="etext">' + renderMDCached(t) + '</span>'
+  );
 }
 /* 只渲染 .entry 内部 —— 工具条、折叠控制、外层属性都不包含。
  * replaceRow / commitEdit 用它做局部更新。 */
@@ -74,7 +70,7 @@ export function renderEntryBody(e) {
     : '';
 
   /* ── 关联消息：头徽章 + 剥离后的正文 ── */
-  const rel = splitRelated(e);
+  const rel = parseRelevanceHeader(e.text);
   let head = '';
   if (rel) {
     head =
@@ -88,7 +84,7 @@ export function renderEntryBody(e) {
       '</button>';
   }
 
-  const textForBody = rel ? rel.body : e.text;
+  const textForBody = rel ? stripQuoteHeader(e.text) : e.text;
   const { html: body, hasImg } = renderEntryBody({ text: textForBody });
 
   return '<div class="entry' + (hasImg ? ' has-img' : '') + '">' +
@@ -130,9 +126,7 @@ export function entryHTML(e, idx, srcNode, foldInfo) {
   '" style="--i:' + idx + '">' +
   '<div class="tools">' +
     '<button class="tool" data-eact="edit" aria-label="编辑" title="编辑">' + I.pen + '</button>' +
-    '<button class="tool" data-eact="pin" aria-label="置顶" title="置顶/取消置顶">' + I.pin + '</button>' +
-    '<button class="tool" data-eact="moveEntry" aria-label="移动到其他话题" title="移动到其他话题">' + I.move + '</button>' +
-    '<button class="tool danger" data-eact="del" aria-label="删除" title="删除">' + I.trash + '</button>' +
+    /* 置顶 / 移动 / 删除 都收进右键菜单（手机上长按同效），行内只保留编辑 */
   '</div>' +
   entryInnerHTML(e, srcNode) +
   foldCtrl +
@@ -152,33 +146,5 @@ export function dayChipHTML(ts, idx) {
 export function entryBlockHTML(e, idx, node, showDay, foldInfo) {
   const head = showDay ? dayChipHTML(e.createdAt, idx) : '';
   return head + entryHTML(e, idx, node, foldInfo);
-}
-
-/* ============================================================
- * 关联消息拆分
- * ============================================================ */
-
-/* 拆分关联消息：头标签、引用目标、正文。
-   比单行正则宽容 —— 允许头标签和引用之间有空行、引用行有缩进。 */
-function splitRelated(e) {
-  if (!e || !e.text) return null;
-  const lines = e.text.split(/\r?\n/);
-
-  /* 第 1 行：> 预览 */
-  if (!lines[0] || !/^\s*>\s/.test(lines[0])) return null;
-  const preview = lines[0].replace(/^\s*>\s*/, '').trim();
-
-  /* 第 2 行：∝ 关键字 [[~tid#^bid]] */
-  const line2 = lines[1] || '';
-  const m = line2.match(/^\s*∝\s*([^\[]*?)\s*\[\[([^\]]+)#\^([^\]]+)\]\]/);
-  if (!m) return null;
-
-  return {
-    preview,                       // "被关联消息的原文预览"
-    label: m[1].trim(),            // "关键字"
-    topicRef: m[2],                // "~tid" 或路径
-    blockId: m[3],                 // "bid"
-    body: lines.slice(2).join('\n').replace(/^\n+/, '').trim(),
-  };
 }
 

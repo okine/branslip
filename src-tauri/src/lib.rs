@@ -79,9 +79,21 @@ fn write_bytes(dir: String, name: String, b64: String) -> Result<(), String> {
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(&b64).map_err(|e| e.to_string())?;
+
+    /* 必须写绝对路径：Android 的系统「保存」对话框给的是 content:// URI，
+       早先直接当路径用会变成相对路径、落到 / 上，报 "read only file system"。 */
     let dirp = PathBuf::from(&dir);
-    fs::create_dir_all(&dirp).map_err(|e| e.to_string())?;
-    fs::write(dirp.join(&name), bytes).map_err(|e| e.to_string())
+    if !dirp.is_absolute() {
+        return Err(format!(
+            "导出目录不是绝对路径（可能是 content:// URI）：{}", dir
+        ));
+    }
+    fs::create_dir_all(&dirp)
+        .map_err(|e| format!("创建目录失败：{}（{}）", dirp.display(), e))?;
+
+    let out = dirp.join(&name);
+    fs::write(&out, bytes)
+        .map_err(|e| format!("写入失败：{}（{}）", out.display(), e))
 }
 
 #[tauri::command]
@@ -123,7 +135,13 @@ fn rename_path(from: String, to: String) -> Result<(), String> {
 
 #[tauri::command]
 fn open_folder(path: String) -> Result<(), String> {
+    /* Web/Tauri 共享层用 '/' 拼路径；explorer.exe 对混合分隔符不稳，
+       Windows 下统一成反斜杠再交给资源管理器。 */
+    #[cfg(target_os = "windows")]
+    let p = PathBuf::from(path.replace('/', "\\"));
+    #[cfg(not(target_os = "windows"))]
     let p = PathBuf::from(&path);
+
     if !p.is_dir() {
         return Err("目录不存在或不是文件夹".into());
     }
@@ -161,6 +179,80 @@ fn open_folder(path: String) -> Result<(), String> {
     }
 }
 
+/* Android 上没有「选文件夹」这回事：tauri-plugin-dialog 在 Android 只用
+   ACTION_GET_CONTENT / ACTION_CREATE_DOCUMENT，没有 ACTION_OPEN_DOCUMENT_TREE，
+   所以 showOpenDialog({directory:true}) 永远不会返回目录。
+   这里给一个固定位置：应用的外部私有目录
+     /storage/emulated/0/Android/data/<identifier>/files/时枝笺
+   不需要任何存储权限，文件管理器 / 数据线能看到，也方便整目录拷出来。
+   兜底：应用私有目录（用户看不见，但一定能写）。 */
+#[tauri::command]
+fn default_storage_dir(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri::Manager;
+
+    let identifier = app.config().identifier.clone();
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    #[cfg(target_os = "android")]
+    candidates.push(PathBuf::from(format!(
+        "/storage/emulated/0/Android/data/{}/files/时枝笺", identifier
+    )));
+
+    #[cfg(not(target_os = "android"))]
+    let _ = &identifier;
+
+    if let Ok(d) = app.path().app_data_dir() {
+        candidates.push(d.join("时枝笺"));
+    }
+
+    let mut last_err = String::from("没有可用目录");
+    for c in candidates {
+        match fs::create_dir_all(&c) {
+            Ok(_) => return Ok(c.to_string_lossy().into_owned()),
+            Err(e) => last_err = format!("{}（{}）", c.display(), e),
+        }
+    }
+    Err(format!("无法创建存储目录：{}", last_err))
+}
+
+/* 这个目录能不能写：建目录 + 写一个探针文件再删掉。
+   Android 11+ 上「所有文件访问」没授予时，对 /storage/emulated/0 下
+   任意目录这里都会 EACCES —— 用它判断权限，不需要任何 Android API。 */
+#[tauri::command]
+fn can_write_dir(dir: String) -> bool {
+    let p = PathBuf::from(&dir);
+    if fs::create_dir_all(&p).is_err() { return false; }
+    let probe = p.join(".shizhijian-write-probe");
+    match fs::write(&probe, b"") {
+        Ok(_) => { let _ = fs::remove_file(&probe); true }
+        Err(_) => false,
+    }
+}
+
+/* 换存储目录时把旧目录整棵树复制过去（迁移用）。返回复制的文件数。 */
+#[tauri::command]
+fn copy_dir_tree(from: String, to: String) -> Result<u32, String> {
+    fn rec(src: &Path, dst: &Path, n: &mut u32) -> std::io::Result<()> {
+        fs::create_dir_all(dst)?;
+        for ent in fs::read_dir(src)? {
+            let ent = ent?;
+            let p = ent.path();
+            let q = dst.join(ent.file_name());
+            if p.is_dir() {
+                rec(&p, &q, n)?;
+            } else {
+                fs::copy(&p, &q)?;
+                *n += 1;
+            }
+        }
+        Ok(())
+    }
+    let mut n = 0u32;
+    rec(&PathBuf::from(&from), &PathBuf::from(&to), &mut n)
+        .map_err(|e| format!("复制失败：{}", e))?;
+    Ok(n)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -169,7 +261,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_dir, read_text, write_text, read_bytes_b64,
             write_bytes, mkdir, exists, remove_entry, rename_path,
-            open_folder
+            open_folder, default_storage_dir, can_write_dir, copy_dir_tree
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -31,6 +31,23 @@ test('entryInnerHTML：编辑态用 textarea', () => {
   assert.match(h, /<textarea/);
 });
 
+test('entryInnerHTML：关联头拆成徽章，正文只保留 body', () => {
+  reset();
+  const e = {
+    id: 'r1',
+    text: '> 被关联的原文\n∝ 关联标签 [[~t1#^b1]]\n\n正文 **重点**',
+    createdAt: 1000,
+  };
+  const n = { id: 'n', title: 'N', entries: [e], pinned: [], children: [] };
+  const h = entryInnerHTML(e, n);
+  assert.match(h, /class="relevance-head"/);
+  assert.match(h, /data-relev-block="b1"/);
+  assert.match(h, /关联标签/);
+  assert.doesNotMatch(h, /∝/);
+  assert.match(h, /被关联的原文/);   // quote preview
+  assert.match(h, /正文/);
+});
+
 
 test('entryHTML：对谈模式下回复消息走 reply-entry', () => {
   reset();
@@ -52,10 +69,11 @@ test('entryHTML：关闭对谈模式后 reply 不再特殊', () => {
   setDialogueEnabled(true);  // 还原
 });
 
-test('entryHTML：tools 里四类按钮齐全', () => {
+test('entryHTML：行内只保留编辑按钮，其余动作收进右键菜单', () => {
   reset();
   const h = entryHTML({ id: 'a', text: 'x', createdAt: 1000 }, 0, { id: 'n', title: 'N' });
-  for (const a of ['edit', 'pin', 'moveEntry', 'del']) {
-    assert.match(h, new RegExp(`data-eact="${a}"`));
+  assert.match(h, /data-eact="edit"/);
+  for (const a of ['pin', 'moveEntry', 'del']) {
+    assert.ok(!h.includes(`data-eact="${a}"`), `${a} 不该再出现在行内`);
   }
 });

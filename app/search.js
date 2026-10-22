@@ -475,7 +475,12 @@ export function initSearch(opts) {
   }
 
   if (els.input) {
-    els.input.addEventListener('keydown', ev => {
+    /* 输入框清空 → 直接退出搜索状态（不用再点放大镜） */
+  els.input.addEventListener('input', () => {
+    if (!String(els.input.value || '').trim()) clearSearch();
+  });
+
+  els.input.addEventListener('keydown', ev => {
       if (ev.key === 'Enter' && !ev.isComposing && ev.keyCode !== 229) {
         ev.preventDefault();
         if (state.panelOpen && state.selected >= 0) openFlat(state.selected);

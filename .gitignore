@@ -1,7 +1,18 @@
-node_modules/
-.DS_Store
 # 依赖
 node_modules/
+
+# 构建产物
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# 本地缓存（Gradle 发行包 + 依赖，约 1 GB），不要提交
+.gradle-home/
+
+# 插件 build script 误建在仓库根目录的权限目录（构建垃圾）
+/permissions/
+
+# 早先折腾 WebView2 / MSI 时留下的日志
+/install.log
 
 # 系统文件
 .DS_Store
@@ -15,7 +26,3 @@ Thumbs.db
 # 日志
 *.log
 npm-debug.log*
-
-src-tauri/target/
-src-tauri/gen/schemas/
-node_modules/

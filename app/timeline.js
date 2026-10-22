@@ -25,6 +25,18 @@ import {
   addTimelineRange, updateTimelineRange, removeTimelineRange,
   addTimelinePoint, updateTimelinePoint, removeTimelinePoint,
 } from './io.js';
+import { enqueue } from './writer.js';
+
+/* _时之间.json 的每一次写都必须走 writer 队列（review 不变量 2）。
+   这些动作都是 read-modify-write：不串行时两次快速操作会互相覆盖（丢区间 /
+   丢时间点），并发 atomicWriteText 还会争用同一个 .tmp，读回校验失败，
+   而 ui.js 里 onEvent 不 await，异常只会变成 unhandled rejection —— 用户零提示。 */
+async function saveTimeline(fn) {
+  const r = await enqueue(fn);
+  if (r && r.ok) return true;
+  toast('时之间保存失败：' + ((r && r.err && r.err.message) || (r && r.err) || '未知错误'));
+  return false;
+}
 
 /* ---------- 格式化 ---------- */
 
@@ -182,7 +194,7 @@ export async function openTimelinePanel() {
   async function onCreateRange() {
     const label = await inputDialog('给这段区间起个名字', '');
     if (label == null) return;
-    await addTimelineRange(Date.now(), null, String(label).trim());
+    if (!await saveTimeline(() => addTimelineRange(Date.now(), null, String(label).trim()))) return;
     toast('已开始');
     await refresh();
   }
@@ -195,7 +207,7 @@ export async function openTimelinePanel() {
     const ms = parseLocalDateTime(v);
     if (ms == null) { toast('时间格式不对'); return; }
     if (r.to != null && ms > r.to) { toast('起点不能晚于终点'); return; }
-    await updateTimelineRange(key, { from: ms });
+    if (!await saveTimeline(() => updateTimelineRange(key, { from: ms }))) return;
     toast('已调整');
     await refresh();
   }
@@ -209,7 +221,7 @@ export async function openTimelinePanel() {
       { okText: '终止' }
     );
     if (!ok) return;
-    await updateTimelineRange(key, { to: Date.now() });
+    if (!await saveTimeline(() => updateTimelineRange(key, { to: Date.now() }))) return;
     toast('已终止');
     await refresh();
   }
@@ -222,7 +234,7 @@ export async function openTimelinePanel() {
     const ms = parseLocalDateTime(v);
     if (ms == null) { toast('时间格式不对'); return; }
     if (ms < r.from) { toast('终点不能早于起点'); return; }
-    await updateTimelineRange(key, { to: ms });
+    if (!await saveTimeline(() => updateTimelineRange(key, { to: ms }))) return;
     toast('已调整');
     await refresh();
   }
@@ -233,7 +245,7 @@ export async function openTimelinePanel() {
     const ok = await confirmDialog('删除这段区间？', '此操作无法撤销。',
       { danger: true, okText: '删除' });
     if (!ok) return;
-    await removeTimelineRange(key);
+    if (!await saveTimeline(() => removeTimelineRange(key))) return;
     toast('已删除');
     await refresh();
   }
@@ -243,7 +255,7 @@ export async function openTimelinePanel() {
     if (!r) return stale();
     const v = await inputDialog('名字', r.label || '');
     if (v == null) return;
-    await updateTimelineRange(key, { label: String(v).trim() });
+    if (!await saveTimeline(() => updateTimelineRange(key, { label: String(v).trim() }))) return;
     await refresh();
   }
 
@@ -252,7 +264,7 @@ export async function openTimelinePanel() {
   async function onCreatePoint() {
     const r = await pointDialog('记下一个时刻', Date.now(), '');
     if (!r) return;
-    await addTimelinePoint(r.at, r.label);
+    if (!await saveTimeline(() => addTimelinePoint(r.at, r.label))) return;
     toast('已记下');
     await refresh();
   }
@@ -262,7 +274,7 @@ export async function openTimelinePanel() {
     if (!p) return stale();
     const r = await pointDialog('编辑时间点', p.at, p.label || '');
     if (!r) return;
-    await updateTimelinePoint(key, { at: r.at, label: r.label });
+    if (!await saveTimeline(() => updateTimelinePoint(key, { at: r.at, label: r.label }))) return;
     toast('已更新');
     await refresh();
   }
@@ -271,7 +283,7 @@ export async function openTimelinePanel() {
     const ok = await confirmDialog('删除这个时间点？', '此操作无法撤销。',
       { danger: true, okText: '删除' });
     if (!ok) return;
-    await removeTimelinePoint(key);
+    if (!await saveTimeline(() => removeTimelinePoint(key))) return;
     toast('已删除');
     await refresh();
   }

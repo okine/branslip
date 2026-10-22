@@ -16,7 +16,7 @@
  */
 
 import { Storage } from './storage.js';
-import { $ } from './utils.js';
+import { $, togglePop } from './utils.js';
 import { Store } from './store.js';
 import { resolveFile } from './io.js';
 import { atomicWriteText } from './writeSecurity.js';
@@ -432,6 +432,8 @@ function openThemePop(anchor) {
 /* ---------- 主题入口（toolbar.js 调用） ---------- */
 
 export async function openThemePanel(anchor) {
+  /* 主题面板开着时再点同一个按钮 → 收起（见 utils.togglePop） */
+  if (togglePop(anchor, '.theme-pop')) return;
   if (!themeDirty) await readTheme();
   themeTab = 'main';
   openThemePop(anchor);

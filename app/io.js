@@ -278,10 +278,20 @@ export async function copyAttachment(fromDir, toDir, relPath) {
 /* ---------- 月份文件（记录内容） ---------- */
 
 // writeMonthFile
-export async function writeMonthFile(node, mk) {
+/* opts.allowDelete=false → 只写不删：调用方（rename 的 writeEntriesFile）
+   会遍历"盘上已存在的月份"，内存里没有该月不代表盘上没有。
+   该月读盘解析失败时（node._loadErrors）一律不删 —— 删一次整月记录就没了。 */
+export async function writeMonthFile(node, mk, opts) {
+  const allowDelete = !opts || opts.allowDelete !== false;
   const fname = monthFileName(mk);
   const entries = node.entries.filter(e => monthKey(e.createdAt) === mk);
   if (!entries.length) {
+    if (!allowDelete) return;
+    if (node._loadErrors && node._loadErrors.has(fname)) {
+      console.warn('[writeMonthFile] 拒绝删除：该月文件本次扫描时解析失败',
+        node.title, fname);
+      return;
+    }
     try { await Storage.removeEntry(node._dir, fname); } catch (e) {}
     return;
   }
@@ -350,7 +360,9 @@ export async function writeEntriesFile(node) {
     (byMonth[mk] ||= []).push(e);
   }
   const allMks = new Set([...existing, ...Object.keys(byMonth)]);
-  for (const mk of allMks) await writeMonthFile(node, mk);
+  /* allowDelete:false —— existing 里可能有"内存里没有"的月份（读盘失败 /
+     同步盘新增），那次删除会连整月记录一起删掉。这里只重写、不删文件。 */
+  for (const mk of allMks) await writeMonthFile(node, mk, { allowDelete: false });
   try { await Storage.removeEntry(node._dir, ENTRY_FILE); } catch (e) {}
   node._hasOldFile = false;
 }

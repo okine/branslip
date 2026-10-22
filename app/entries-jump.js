@@ -106,6 +106,20 @@ export function flushCurrentScroll() {
   flushScroll(id);
 }
 
+/**
+ * 把"当前视图的实时位置 + 所有攒着没写的滚动位置"一次性写盘。
+ * 清缓存 / 换目录 / 关闭前调用：滚动位置属于磁盘状态，不能跟内存缓存一起丢。
+ */
+export function flushAllScroll() {
+  const id = Store.ui.selectedId;
+  const s = $('#entriesScroll');
+  if (id && s) {
+    Store.setScrollMemo(id, s.scrollTop);
+    scrollDirty.add(id);
+  }
+  for (const nid of [...scrollDirty]) flushScroll(nid);
+}
+
 export function clearScrollState() {
   if (scrollSaveTimer) { clearTimeout(scrollSaveTimer); scrollSaveTimer = null; }
   scrollDirty.clear();

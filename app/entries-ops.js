@@ -350,6 +350,8 @@ export function executeDelete(eid, n, ent) {
     text: ent.text,
     originalMs: ent.createdAt,
     originalStamp: fmtStamp(ent.createdAt),
+    /* ★ 冻结的时间串：删除再恢复时要原样写回，blockId / 引用不能变 */
+    writeStamp: ent._writeStamp || null,
     deletedAt: fmtStamp(Date.now()),
     fromTopic: pathTitles(n, '/'),
     fromTopicId: n.topicId || null,
@@ -390,14 +392,15 @@ export function executeDelete(eid, n, ent) {
   removeEntryWithCleanup(n, eid);
 
   Store.ui.multiSelect.delete(ent.id);
-  if (!Store.ui.multiSelect.size) {
-    const bar = $('#multiBar'); if (bar) bar.classList.remove('on');
-  }
 
   if (Store.ui.merged) D.renderEntries();
   else { D.removeEntryRow(eid, n); D.updateTopCount(); }
   refreshAllRowMeta();
   D.renderPins();
+  /* 统一走多选栏刷新：会更新"已选 N 条"计数，并在清空时把 Esc handler
+     出栈。以前这里手写隐藏多选栏，计数不刷新、Esc 栈留一个僵尸 handler，
+     下一次 Escape 会被它吃掉。 */
+  refreshMultiUI();
 }
 
 /* ============================================================
@@ -432,9 +435,18 @@ export function moveEntryTo(ent, fromNode) {
 
     enqueue(async () => {
       try {
+        /* 附件没搬过去就不能算"移动成功"：正文里的 ![](attachments/x.png)
+           在新话题下会变成"图片缺失"，而源话题之后跑「清理未引用的图片」
+           会把唯一一份副本删掉 —— 图片数据永久丢失。所以这里收集失败并抛错，
+           交给外层 catch 回滚条目位置。 */
+        const failed = [];
         for (const p of paths) {
           try { await copyAttachment(fromNode._dir, t._dir, p); }
-          catch (e) { console.warn('附件复制失败', p, e); }
+          catch (e) { console.warn('附件复制失败', p, e); failed.push(p); }
+        }
+        if (failed.length) {
+          throw new Error('附件复制失败 ' + failed.length + '/' + paths.length +
+            '：' + failed[0]);
         }
         await persistMonthOf(fromNode, ent.createdAt);
         await persistMonthOf(t, ent.createdAt);

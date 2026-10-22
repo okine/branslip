@@ -3117,7 +3117,7 @@ dependencies = [
 
 [[package]]
 name = "shizhijian"
-version = "10.1.5"
+version = "10.2.5"
 dependencies = [
  "base64 0.22.1",
  "serde",
@@ -3527,8 +3527,6 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-dialog"
 version = "2.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "daf9a5c92e39bdd84f22f6be9230e39d0c4e140345f71ffe6058dca4f71127cf"
 dependencies = [
  "log",
  "raw-window-handle",
@@ -3545,8 +3543,6 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-fs"
 version = "2.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "466eb32466fe5021b6728b06862f9ff14a9f7e1af890047654e03a96d7c0e1bb"
 dependencies = [
  "anyhow",
  "dunce",
@@ -3569,8 +3565,6 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-opener"
 version = "2.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d39404b2572927e0d3ed30a7ca226037f7508d22e79c96ee6ef0d42b6a4b3345"
 dependencies = [
  "dunce",
  "glob",

@@ -1,7 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "时枝笺",
-  "version": "10.1.5",
+  "mainBinaryName": "shizhijian",
+  "version": "10.2.5",
   "identifier": "com.okine.shizhijian",
   "build": {
     "frontendDist": "../app"
@@ -21,10 +22,10 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
     "android": {
       "minSdkVersion": 24,
-      "versionCode": 100105
+      "versionCode": 100205
     },
     "icon": [
       "icons/32x32.png",

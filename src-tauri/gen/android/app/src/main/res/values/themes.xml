@@ -1,0 +1,9 @@
+﻿<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base application theme. -->
+    <style name="Theme.shizhijian" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- 状态栏/导航条在 edge-to-edge 下是透过的，让窗口底色跟页面纸色一致 -->
+        <item name="android:windowBackground">#F7F4EC</item>
+        <item name="android:navigationBarColor">#F7F4EC</item>
+        <item name="android:statusBarColor">#F7F4EC</item>
+    </style>
+</resources>

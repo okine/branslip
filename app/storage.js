@@ -13,8 +13,12 @@
  *   Tauri 下是路径字符串
  */
 
-const isTauri = typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__;
-const tauriInvoke = isTauri ? window.__TAURI__.core.invoke : null;
+import { PLATFORM, invoke } from './platform.js';
+
+/* 平台判断统一在 platform.js，这里只做转发（老代码还在读 Storage.isTauri）。 */
+const isTauri = PLATFORM.isTauri;
+const isAndroid = PLATFORM.isAndroid;
+const tauriInvoke = isTauri ? invoke : null;
 
 function joinPath(a, b) {
   if (!b) return a || '';
@@ -147,6 +151,28 @@ const Storage = (() => {
 
   return {
     isTauri,
+    isAndroid,
+
+    /* Android：由 Rust 侧给出固定的存储目录（并确保已创建） */
+    defaultDir: isTauri ? () => tauriInvoke('default_storage_dir') : null,
+
+    /* ── Android 自选文件夹（MANAGE_EXTERNAL_STORAGE）──────────────
+       权限判断不调 Android API：往目标目录写个探针文件，能写就是有权限。 */
+    canWriteDir: isTauri ? (dir) => tauriInvoke('can_write_dir', { dir }) : async () => true,
+    copyDirTree: isTauri ? (from, to) => tauriInvoke('copy_dir_tree', { from, to }) : null,
+
+    /* 跳系统「所有文件访问」设置页（MainActivity 注入的桥） */
+    requestAllFilesAccess() {
+      const b = typeof window !== 'undefined' ? window.ShizhijianAndroid : null;
+      if (!b || typeof b.requestAllFilesAccess !== 'function') return false;
+      b.requestAllFilesAccess();
+      return true;
+    },
+    /* Android API level；拿不到返回 0（非 Android） */
+    androidSdk() {
+      const b = typeof window !== 'undefined' ? window.ShizhijianAndroid : null;
+      return b && typeof b.sdkInt === 'function' ? b.sdkInt() : 0;
+    },
 
     getDir:      isTauri ? tauriGetDir      : webGetDir,
     getFile:     isTauri ? tauriGetFile     : webGetFile,

@@ -19,7 +19,9 @@
 
 import { Store } from './store.js';
 import { Storage } from './storage.js';
+import { invoke } from './platform.js';
 import { toast } from './ui.js';
+import { pickDirectory } from './picker.js';
 import { enqueue } from './writer.js';
 
 /* CRC32 查表 —— ZIP 规范强制要求 */
@@ -149,6 +151,17 @@ export async function exportZip(rootDir) {
 /* 由 toolbar.js 的按钮数组调用 */
 export async function exportZipFlow(btn) {
   if (!Store.fs.ready) { toast('尚未连接文件夹'); return; }
+
+  /* Android 先选目标目录：这是纯 UI 交互，不能放在写队列里干等 */
+  let androidDir = null;
+  if (Storage.isTauri && Storage.isAndroid) {
+    androidDir = await pickDirectory({
+      start: '/storage/emulated/0/Download',
+      title: '导出到哪个文件夹',
+    });
+    if (!androidDir) { toast('已取消'); return; }
+  }
+
   if (btn) btn.disabled = true;
   try {
     await enqueue(async () => {
@@ -158,24 +171,42 @@ export async function exportZipFlow(btn) {
         '-' + p(d.getHours()) + p(d.getMinutes()) + '.zip';
 
       if (Storage.isTauri) {
-        const savePath = await window.__TAURI__.core.invoke('plugin:dialog|save', {
-          options: {
-            defaultPath: fname,
-            filters: [{ name: 'ZIP 压缩包', extensions: ['zip'] }],
-          },
-        });
-        if (!savePath) { toast('已取消'); return; }
+        let dir = null, name = fname;
 
-        const idx = Math.max(savePath.lastIndexOf('/'), savePath.lastIndexOf('\\'));
-        const dir  = idx >= 0 ? savePath.slice(0, idx) : '.';
-        const name = idx >= 0 ? savePath.slice(idx + 1) : savePath;
+        if (Storage.isAndroid) {
+          /* Android 的系统「保存」对话框只会返回 content:// URI，
+             write_bytes 要的是绝对路径 —— 用上面选好的目录。 */
+          dir = androidDir;
+          /* 重名就加序号，别把上一次的备份覆盖掉 */
+          try {
+            let i = 1, cand = fname;
+            while ((await Storage.exists(dir, cand)) && i <= 50) {
+              cand = fname.replace(/\.zip$/i, '') + '(' + i + ').zip';
+              i++;
+            }
+            name = cand;
+          } catch (e) {}
+        } else {
+          const savePath = await invoke('plugin:dialog|save', {
+            options: {
+              defaultPath: fname,
+              filters: [{ name: 'ZIP 压缩包', extensions: ['zip'] }],
+            },
+          });
+          if (!savePath) { toast('已取消'); return; }
+
+          const idx = Math.max(savePath.lastIndexOf('/'), savePath.lastIndexOf('\\'));
+          dir  = idx >= 0 ? savePath.slice(0, idx) : '.';
+          name = idx >= 0 ? savePath.slice(idx + 1) : savePath;
+        }
 
         const buf = await blob.arrayBuffer();
-        await window.__TAURI__.core.invoke('write_bytes', {
+        await invoke('write_bytes', {
           dir, name, b64: bufToB64(buf),
         });
 
-        toast('已导出到 ' + savePath + '（' + (blob.size / 1048576).toFixed(1) + ' MB）');
+        toast('已导出到 ' + dir + '/' + name +
+          '（' + (blob.size / 1048576).toFixed(1) + ' MB）');
       } else {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');

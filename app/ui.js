@@ -97,19 +97,38 @@ const modalRoot = $('#modalRoot');
 
 let menuAC = null;
 let _menuEscOff = null; 
+/* 当前菜单是哪个按钮打开的 —— 用来实现"再点一次收起"。
+   不能只靠 DOM 查询：pointerdown 可能先把菜单关掉，click 再来就查不到了。 */
+let _menuAnchor = null;
 
 export function closeMenu() {
   menuRoot.innerHTML = '';
   if (menuAC) { menuAC.abort(); menuAC = null; }   /* ★ 同步清监听器 */
   if (_menuEscOff) { _menuEscOff(); _menuEscOff = null; }
+  _menuAnchor = null;
 }
 
 export function hasMenu()   { return menuRoot.childElementCount > 0; }
 
+/**
+ * 「再点一次同一个按钮」→ 收起它开的菜单，返回 true（调用方直接 return）。
+ * 用记录下来的锚点判断，不依赖菜单此刻是否还在 DOM 里。
+ */
+export function toggleMenu(anchor) {
+  if (!anchor) return false;
+  if (_menuAnchor === anchor && hasMenu()) {
+    closeMenu();
+    return true;
+  }
+  return false;
+}
+
 /* align: 'right' → x 是锚点右边缘；
           'center' → x 是锚点中心；
-          省略     → x 是锚点左边缘。 */
-export function openMenuAt(x, y, items, align) {
+          省略     → x 是锚点左边缘。
+   ignoreEl: 这个元素上的点击不算"点外面"（就是开菜单的那个按钮）——
+             否则 pointerdown 会先把菜单关掉，click 再打开，按钮永远关不上。 */
+export function openMenuAt(x, y, items, align, ignoreEl) {
   closeMenu();
   const m = document.createElement('div'); m.className = 'menu';
   m.innerHTML = items.map((it, i) => {
@@ -125,6 +144,7 @@ export function openMenuAt(x, y, items, align) {
       '" data-mi="' + i + '">' + (it.icon || '') + '<span>' + esc(it.label) + '</span></button>';
   }).join('');
   menuRoot.appendChild(m);
+  _menuAnchor = ignoreEl || null;
   _menuEscOff = pushEsc(closeMenu);
 
   /* setTimeout 避免当前这次点击立即触发关闭 */
@@ -132,7 +152,10 @@ export function openMenuAt(x, y, items, align) {
   menuAC = ac;
   setTimeout(() => {
     document.addEventListener('pointerdown', ev => {
-      if (!m.contains(ev.target)) closeMenu();
+      if (m.contains(ev.target)) return;
+      /* 点开菜单的那个按钮不算"点外面"：交给它自己的 toggle 关 */
+      if (ignoreEl && (ev.target === ignoreEl || ignoreEl.contains(ev.target))) return;
+      closeMenu();
     }, { signal: ac.signal });
   }, 0);
   const mw = m.offsetWidth, mh = m.offsetHeight;
@@ -153,7 +176,7 @@ export function openMenuAt(x, y, items, align) {
 
 export function openMenu(anchor, items) {
   const r = anchor.getBoundingClientRect();
-  openMenuAt(r.right, r.bottom + 6, items, 'right');   // ← 传真实右边缘
+  openMenuAt(r.right, r.bottom + 6, items, 'right', anchor);   // ← 传真实右边缘 + 锚点
 }
 
 /* ---------- 模态 ---------- */

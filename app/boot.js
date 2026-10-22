@@ -18,6 +18,7 @@ import { $, esc } from './utils.js';
 import { I } from './icons.js';
 import { Store } from './store.js';
 import { Storage } from './storage.js';
+import { PLATFORM, invoke } from './platform.js';
 import { installMathOverflowWatcher } from './md.js';
 import { findNode, findByPath, pOf, stats } from './tree-utils.js';
 import { recoverTempFiles } from './writeSecurity.js';
@@ -28,7 +29,10 @@ import { resetMeta } from './meta-row.js';
 import { select } from './tree.js';
 import { setDialogueEnabled } from './entries-render.js';
 import { initTheme, theme } from './theme.js';
-import { toast } from './ui.js';
+import { toast, confirmDialog } from './ui.js';
+import { pickDirectory } from './picker.js';
+
+const ANDROID_ROOT = '/storage/emulated/0';
 
 /* ---------- 依赖注入 ---------- */
 let D = { renderAll: () => {} };
@@ -103,7 +107,37 @@ function hideGate() { gate.classList.add('hidden'); }
 
 /* ---------- 连接 ---------- */
 
+/* 连接 / 重扫是同步读盘 + 解析，大目录要几秒：给一个覆盖层，别让用户以为卡死 */
+let bootMask = null;
+export async function withBusy(label, fn) {
+  if (!bootMask) {
+    bootMask = document.createElement('div');
+    bootMask.id = 'bootMask';
+    bootMask.innerHTML =
+      '<div class="bm-card"><div class="bm-spin"></div><div class="bm-text"></div></div>';
+    document.body.appendChild(bootMask);
+    requestAnimationFrame(() => { if (bootMask) bootMask.classList.add('on'); });
+  }
+  const txt = bootMask.querySelector('.bm-text');
+  if (txt) txt.textContent = label || '正在读取…';
+  try {
+    return await fn();
+  } finally {
+    const el = bootMask;
+    bootMask = null;
+    if (el) {
+      el.classList.remove('on');
+      setTimeout(() => el.remove(), 260);
+    }
+  }
+}
+
 export async function connect(h) {
+  const label = '正在读取：' + (String(h && h.name ? h.name : h).split(/[\\\/]/).filter(Boolean).pop() || '');
+  await withBusy(label, () => connectInner(h));
+}
+
+async function connectInner(h) {
   /* ── Tauri 分支：h 是路径字符串 ── */
   if (Storage.isTauri) {
     Store.setDir(h);
@@ -126,7 +160,8 @@ export async function connect(h) {
     Store.fs.hasError = false;
     markFsReady();
     $('#saveDot').title = '';
-    $('#folderName').textContent = h.split(/[\\\/]/).filter(Boolean).pop() || h;
+    const fn = $('#folderName');
+    if (fn) fn.textContent = h.split(/[\\\/]/).filter(Boolean).pop() || h;
 
     await initTheme();
     setDialogueEnabled(theme.dialogue);
@@ -162,7 +197,8 @@ export async function connect(h) {
   Store.fs.hasError = false;
   markFsReady();          /* 放行"未连接期"排队等着的写任务 */
   $('#saveDot').title = '';
-  $('#folderName').textContent = h.name;
+  const fnW = $('#folderName');
+  if (fnW) fnW.textContent = h.name;
   await initTheme();
   setDialogueEnabled(theme.dialogue);
   hideGate();
@@ -172,6 +208,64 @@ export async function connect(h) {
   const t = prefs.sel ? findByPath(prefs.sel) : null;
   const initial = t || Store.root.children[0];
   if (initial) select(initial.id);
+}
+
+/* Google Play 要求「所有文件访问」有正当理由、审核严格；本项目是自用/侧载，
+   所以直接用它换取「路径语义不变」——上层 io / writer / loader 一行不用改。 */
+
+/* 新目录是空的、而应用私有目录里还有旧数据时，问一句要不要搬过去 */
+async function maybeMigrateFromAppDir(dir) {
+  let items = [];
+  try { items = await Storage.listEntries(dir); } catch (e) { return; }
+  if (items.length) return;
+  let oldDir = null;
+  try { oldDir = await Storage.defaultDir(); } catch (e) { return; }
+  if (!oldDir || oldDir === dir) return;
+  let oldItems = [];
+  try { oldItems = await Storage.listEntries(oldDir); } catch (e) { return; }
+  if (!oldItems.length) return;
+  const ok = await confirmDialog(
+    '把旧记录搬过来？',
+    '应用私有目录里还有 ' + oldItems.length + ' 个条目。\n' +
+    '要把它们复制到新文件夹吗？（只复制，不删原件）',
+    { okText: '复制过来' }
+  );
+  if (!ok) return;
+  try {
+    const n = await Storage.copyDirTree(oldDir, dir);
+    toast('已复制 ' + n + ' 个文件');
+  } catch (e) {
+    toast('复制失败：' + ((e && e.message) || e));
+  }
+}
+
+/**
+ * Android：先确认「所有文件访问」权限，再打开应用内目录浏览器。
+ * 返回选中的路径；取消 / 没权限 / 系统太老 都返回 null。
+ * （桌面和 Web 走系统自带的文件夹对话框，用不到这个。）
+ */
+export async function chooseAndroidDir() {
+  const sdk = Storage.androidSdk();
+  if (sdk && sdk < 30) {
+    toast('Android 10 及以下只能用应用私有目录');
+    return null;
+  }
+  if (!(await Storage.canWriteDir(ANDROID_ROOT))) {
+    const go = await confirmDialog(
+      '需要「所有文件访问」权限',
+      '要自己挑存储文件夹，Android 11+ 需要这个权限。\n' +
+      '点「去授权」→ 在系统设置里打开这项权限 → 回来再点一次按钮。',
+      { okText: '去授权' }
+    );
+    if (go && !Storage.requestAllFilesAccess()) {
+      toast('请到「设置 → 应用 → 时枝笺 → 权限」里打开「所有文件访问」');
+    }
+    return null;
+  }
+  const dir = await pickDirectory({ start: ANDROID_ROOT, title: '选择存储文件夹' });
+  if (!dir) return null;
+  await maybeMigrateFromAppDir(dir);
+  return dir;
 }
 
 async function requestConnect(h) {
@@ -189,9 +283,14 @@ $('#gatePick').addEventListener('click', async () => {
   if (Storage.isTauri) {
     let dir;
     try {
-      dir = await window.__TAURI__.core.invoke('plugin:dialog|open', {
-        options: { directory: true, multiple: false, title: '选择存储文件夹' },
-      });
+      /* Android 没有系统文件夹选择器 → 应用内目录浏览器（见 chooseAndroidDir） */
+      if (Storage.isAndroid) {
+        dir = await chooseAndroidDir();
+      } else {
+        dir = await invoke('plugin:dialog|open', {
+          options: { directory: true, multiple: false, title: '选择存储文件夹' },
+        });
+      }
     } catch (e) {
       if (e && e.name !== 'AbortError') toast('无法打开文件夹：' + (e.message || e));
       return;

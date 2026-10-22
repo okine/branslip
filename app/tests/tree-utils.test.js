@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 
 import { Store } from '../store.js';
 import {
-  walk, isDesc, subtreeIds, pathOf, pOf,
+  walk, isDesc, subtreeIds, pathOf, pathTitles, pOf,
   findByPath, pathExists, stats,
 } from '../tree-utils.js';
 
@@ -96,6 +96,12 @@ test('pathOf 从根到节点的完整路径', () => {
 test('pOf 用 \\u0001 连接标题', () => {
   setup();
   assert.equal(pOf(Store.node('A1a')), '工作\u0001项目\u0001会议');
+});
+
+test('pathTitles 支持自定义分隔符', () => {
+  setup();
+  assert.equal(pathTitles(Store.node('A1a')), '工作 / 项目 / 会议');
+  assert.equal(pathTitles(Store.node('A1a'), '/'), '工作/项目/会议');
 });
 
 

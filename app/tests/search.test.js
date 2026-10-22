@@ -39,3 +39,16 @@ test('highlightText：没有查询词时只转义', () => {
   const h = highlightText('<img src=x>', parseQuery(''));
   assert.equal(h, '&lt;img src=x&gt;');
 });
+
+test('parseQuery：空查询与非法日期不产生过滤器', () => {
+  const q = parseQuery('   after:not-a-date   ');
+  assert.deepEqual(q.terms, []);
+  assert.equal(q.after, null);
+});
+
+test('highlightText：多个词分别标记，正则特殊字符安全', () => {
+  const q = parseQuery('a+b "完整"');
+  const h = highlightText('a+b 和 完整 内容', q);
+  assert.match(h, /<mark>a\+b<\/mark>/);
+  assert.match(h, /<mark>完整<\/mark>/);
+});

@@ -1600,11 +1600,29 @@ body.has-bg .pin-chip{background:rgba(255,253,248,.92)}
   .entry,.entry.editing{max-width:86%}
   #composer{padding:10px 12px 14px}
   .top-count{display:none}
-  #toolbar{width:50px;padding:10px 4px}
-  .tb-btn{width:40px;height:44px}
-  .tb-label{display:none}
   .topic-media{grid-template-columns:repeat(auto-fill,minmax(84px,1fr))}
 }
+
+/* ─── 15b 手机：工具栏被搬进侧栏抽屉后，改成带文字的网格 ─────── */
+/* fixed-buttons.js 在 ≤860px 时把 #toolbar 整个移进 #sideTools，
+   所以这里覆盖掉上面那条「只留图标、隐藏文字」的规则。 */
+#sidebar #toolbar{
+  width:auto;flex:none;flex-direction:row;flex-wrap:wrap;gap:6px;
+  border-right:none;border-top:1px solid var(--line);
+  padding:10px 12px;overflow:visible;background:transparent;z-index:auto;
+}
+#sidebar #toolbar .tb-btn{
+  width:calc(50% - 3px);height:42px;
+  flex-direction:row;justify-content:flex-start;align-items:center;
+  gap:9px;padding:0 10px;border-radius:10px;
+  background:var(--white);border:1px solid var(--line-soft);
+}
+#sidebar #toolbar .tb-btn .tb-ic{flex:none;display:flex}
+#sidebar #toolbar .tb-label{
+  display:block;font-size:12.5px;letter-spacing:0;line-height:1.2;
+  max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+#sidebar #toolbar .tb-sep{display:none}
 
 @media(max-width:1180px){
   #sidebar{width:320px}
@@ -1647,4 +1665,85 @@ body.has-bg .pin-chip{background:rgba(255,253,248,.92)}
 @keyframes shimmer{
   from{background-position:100% 0}
   to{background-position:0 0}
+}
+/* ─── 17 目录选择器（Android 用，见 picker.js）────────────────── */
+.pk-path{
+  font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
+  font-size:12px;color:var(--ink3);margin:2px 0 10px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.pk-chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+.pk-chip{
+  font-size:12px;padding:5px 10px;border:1px solid var(--line);
+  border-radius:999px;background:var(--white);color:var(--ink2);
+}
+.pk-chip:hover{border-color:var(--accent);color:var(--accent)}
+.pk-list{
+  max-height:min(52vh,340px);overflow:auto;margin-bottom:12px;padding:4px;
+  border:1px solid var(--line-soft);border-radius:10px;background:var(--paper);
+}
+.pk-row{
+  display:flex;align-items:center;gap:9px;width:100%;padding:9px 10px;
+  border-radius:8px;text-align:left;color:var(--ink);
+}
+.pk-row:hover,.pk-row:active{background:var(--accent-soft);color:var(--accent)}
+.pk-folder{flex:none;font-size:14px;line-height:1}
+.pk-name{
+  flex:1;min-width:0;font-size:13.5px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.pk-empty{padding:18px;text-align:center;color:var(--ink3);font-size:13px}
+
+/* ─── 18 手机：全屏页（话题详情等）不许左右晃 ─────────────── */
+/* .pp-body 在窄屏仍是 flex 行，侧栏 + 列表会超出视口宽度，
+   手指一拖整页就横向跑；这里改成纵向堆叠并锁掉横向溢出。 */
+.pin-page{overflow-x:hidden}
+@media(max-width:860px){
+  .pin-page{max-width:100vw;overflow-x:hidden}
+  .pp-head{min-width:0}
+  .pp-head h3{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pp-body{flex-direction:column;min-width:0;max-width:100%;overflow-x:hidden}
+  .pp-side{width:100%;max-width:100%;flex:none;border-right:none;
+    border-bottom:1px solid var(--line);overflow-x:hidden}
+  .pp-list{width:100%;max-width:100%;overflow-x:hidden}
+  .pp-list *{max-width:100%}
+  .topic-media{max-width:100%}
+  .ti-scroll,.ti-svg{max-width:100%}
+}
+
+/* ─── 19 手机：抽屉窄一点，别整屏盖住消息 ─────────────────── */
+@media(max-width:860px){
+  #sidebar{width:min(78vw,300px)}
+}
+@media(max-width:1180px) and (min-width:861px){
+  #sidebar{width:300px}
+}
+
+/* ─── 20 简介下方的时间行（展示态）────────────────────────── */
+.topic-intro-meta{
+  margin-top:8px;font-size:12px;color:var(--ink3);
+  display:flex;align-items:center;gap:6px;flex-wrap:wrap;
+}
+.topic-intro-meta .dot{opacity:.6}
+.topic-intro-view + .topic-intro-meta{margin-top:10px}
+
+/* ─── 21 连接/重扫时的加载覆盖层 ───────────────────────────── */
+#bootMask{
+  position:fixed;inset:0;z-index:700;display:flex;align-items:center;justify-content:center;
+  background:rgba(247,244,236,.72);backdrop-filter:blur(2px);
+  opacity:0;transition:opacity .22s;
+}
+#bootMask.on{opacity:1}
+.bm-card{display:flex;align-items:center;gap:12px;padding:14px 18px;border-radius:14px;
+  background:var(--white);border:1px solid var(--line);box-shadow:0 8px 28px rgba(43,38,28,.14)}
+.bm-spin{width:18px;height:18px;border-radius:50%;flex:none;
+  border:2.5px solid var(--accent-soft);border-top-color:var(--accent);
+  animation:bmSpin .8s linear infinite}
+@keyframes bmSpin{to{transform:rotate(360deg)}}
+.bm-text{font-size:13.5px;color:var(--ink2)}
+
+/* 只给屏幕阅读器 / 程序读的隐藏标签 */
+.sr-only{
+  position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;
+  overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0;
 }

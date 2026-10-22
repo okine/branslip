@@ -12,7 +12,7 @@ import { hydrateImages } from './image.js';
 import { enqueue } from './writer.js';
 import { theme, writeTheme } from './theme.js';
 import {
-  toast, openMenu, closeSide, pushEsc
+  toast, openMenu, closeSide, pushEsc, toggleMenu
 } from './ui.js';
 import { openTopicPicker } from './ui-topicPicker.js';
 import { walk } from './tree-utils.js';
@@ -220,6 +220,8 @@ export function exitMerge() {
 /* ---------- 菜单 ---------- */
 
 export function openMergeMenu(anchor) {
+  /* 合并菜单开着时再点同一个按钮 → 收起（见 ui.toggleMenu） */
+  if (toggleMenu(anchor)) return;
   const items = [];
   items.push({ icon: I.layers, label: '全部时间流', fn: () => enterMerge('all') });
   items.push({ icon: I.plus, label: '选择话题合并…', fn: openMergePicker });

@@ -18,10 +18,11 @@
  */
 import {
   boot, wireBoot, connect,
-  loadPrefs, savePrefs, collapseAll,
+  loadPrefs, savePrefs, collapseAll, chooseAndroidDir,
 } from './boot.js';
 import { Store } from './store.js';
 import { Storage } from './storage.js';
+import { PLATFORM, invoke, currentWindow } from './platform.js';
 import { $, esc } from './utils.js';
 import { I } from './icons.js';
 import {
@@ -194,6 +195,59 @@ document.addEventListener('keydown', e => {
   /* ★ 唯一入口：栈里有什么就关什么 */
   runTopEsc();
 });
+
+/* Android 硬件返回键：MainActivity 用 evaluateJavascript 调这里。
+   'handled' = 关掉了一层（菜单/弹窗/侧栏/编辑态）；
+   'draft'   = 没层可关、但有草稿 → 原生侧提示"再按一次退出"；
+   'none'    = 什么都没有 → 原生侧提示"再按一次退出"。 */
+window.__shBack = () => {
+  if (Store.ui.editingEntry) {
+    Store.ui.editingEntry = null;
+    renderEntries();
+    return 'handled';
+  }
+  if (runTopEsc()) return 'handled';
+  return draftTopicIds().length ? 'draft' : 'none';
+};
+
+/* ── 关闭守卫：有草稿 / 有写盘排队时别静默丢 ──────────────────
+   1) 浏览器 & WebView：beforeunload（只能弹系统默认确认框）
+   2) Tauri 桌面：拦窗口关闭事件，弹自己的确认框，确认了才 destroy */
+function hasUnsavedWork() {
+  return draftTopicIds().length > 0 || Store.fs.pending > 0;
+}
+
+function unsavedSummary() {
+  const d = draftTopicIds().length;
+  const p = Store.fs.pending;
+  const bits = [];
+  if (d) bits.push(d + ' 个话题里有草稿');
+  if (p) bits.push(p + ' 个写入还在排队');
+  return bits.join('，');
+}
+
+window.addEventListener('beforeunload', e => {
+  if (!hasUnsavedWork()) return;
+  e.preventDefault();
+  e.returnValue = '';
+});
+
+(function wireTauriCloseGuard() {
+  try {
+    const win = currentWindow();
+    if (!win || typeof win.onCloseRequested !== 'function') return;
+    win.onCloseRequested(async ev => {
+      if (!hasUnsavedWork()) return;
+      ev.preventDefault();
+      const ok = await confirmDialog(
+        '还有没保存的内容',
+        unsavedSummary() + '。\n现在关闭会丢掉这些内容。',
+        { danger: true, okText: '仍然关闭', cancelText: '继续写' }
+      );
+      if (ok) { try { await win.destroy(); } catch (e) {} }
+    });
+  } catch (e) { /* 非 Tauri 环境忽略 */ }
+})();
 
 document.addEventListener('click', e => {
   /* ── 1. 镜像卡头：打开源 ── */
@@ -428,9 +482,16 @@ async function changeFolder() {
   if (Storage.isTauri) {
     let dir;
     try {
-      dir = await window.__TAURI__.core.invoke('plugin:dialog|open', {
-        options: { directory: true, multiple: false, title: '选择存储文件夹' },
-      });
+      if (Storage.isAndroid) {
+        /* Android 只有应用内目录浏览器，没有系统文件夹对话框 */
+        dir = await chooseAndroidDir();
+        if (!dir) return;
+        if (Store.dir === dir) { toast('已经是这个文件夹了：' + dir); return; }
+      } else {
+        dir = await invoke('plugin:dialog|open', {
+          options: { directory: true, multiple: false, title: '选择存储文件夹' },
+        });
+      }
     } catch (e) {
       if (e && e.name !== 'AbortError') toast('无法打开文件夹：' + (e.message || e));
       return;

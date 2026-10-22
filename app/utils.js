@@ -42,6 +42,24 @@ export function countLabel(n) {
 
 /* 列表分页的统一基准值。需要调整时只改这里；
    各模块按用途读取，不再各自写 40 / 80 / 120。 */
+
+/**
+ * 重复点同一个「会弹面板」的按钮 = 把那个面板关掉。
+ *
+ *   togglePop(anchor, '.theme-pop') → 面板开着就关掉并返回 true
+ *                                    （调用方据此直接 return，不再重开）
+ *
+ * anchor 给了就只认它自己开的那一个（面板上挂了 `_anchor` 时不一致就放过）。
+ */
+export function togglePop(anchor, panelSel, close) {
+  if (typeof document === 'undefined') return false;
+  const pop = document.querySelector(panelSel);
+  if (!pop) return false;
+  if (anchor && pop._anchor && pop._anchor !== anchor) return false;
+  if (typeof close === 'function') close(pop); else pop.remove();
+  return true;
+}
+
 export const PAGING = {
   initial: 80,        // 单话题首屏
   chunk: 40,          // 单话题向上/向下每次加载

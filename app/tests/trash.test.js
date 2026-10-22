@@ -167,12 +167,24 @@ test('doTrashRestore：恢复成功后把该条从回收站文件里划掉', asy
   assert.equal(back[0].id, 'keep', '只划掉被恢复的那条');
 });
 
-test('doTrashRestore：released 的 _writeStamp 被清掉，重新按 createdAt 生成', async () => {
+test('doTrashRestore：恢复后时间戳与 blockId 保持原样（引用不能断）', async () => {
+  const A2 = setup();
+  const stamp = '2026-09-17 09:05:03.007+00:00';
+  const eid = await doTrashRestore(
+    item({ writeStamp: stamp, originalMs: Date.parse('2026-09-17T09:05:03.007Z') }), 'A');
+  const e = A2.entries.find(x => x.id === eid);
+
+  assert.equal(e._writeStamp, stamp, '冻结的时间串必须原样带回来');
+  const bid = (await import('../mutate.js')).Mutate.entryBlockId(e);
+  assert.equal(bid, '2026-09-17_09-05-03-007', 'blockId 不能变，否则引用全断');
+});
+
+test('doTrashRestore：旧快照没有 writeStamp 时按 createdAt 生成', async () => {
   const A2 = setup();
   const eid = await doTrashRestore(item(), 'A');
   const e = A2.entries.find(x => x.id === eid);
 
-  assert.equal(e._writeStamp, undefined, '新条目不该带旧时间串');
+  assert.equal(e._writeStamp, undefined);
   const bid = (await import('../mutate.js')).Mutate.entryBlockId(e);
   assert.match(bid, /^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-\d{3}$/);
 });
@@ -182,6 +194,18 @@ test('doTrashRestore：话题不存在 / item 为空 → false，不动任何状
   assert.equal(await doTrashRestore(item(), '不存在'), false);
   assert.equal(await doTrashRestore(null, 'A'), false);
   assert.equal(A2.entries.length, 0);
+});
+
+test('doTrashRestore：落盘失败 → 内存回滚，不返回成功', async () => {
+  const A2 = setup();
+  Store.ui.selectedId = 'A';
+  A2._dir = null;              // 写月份文件时失败
+
+  const eid = await doTrashRestore(item(), 'A');
+
+  assert.equal(eid, false);
+  assert.equal(A2.entries.length, 0, '写盘失败后不能留下幽灵记录');
+  assert.equal(Store.entry(A2.entries[0] && A2.entries[0].id), null);
 });
 
 test('doTrashRestore：时间戳坏掉 → false，且不写进 entries、不动回收站', async () => {

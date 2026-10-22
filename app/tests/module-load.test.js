@@ -54,6 +54,8 @@ const MODULES = [
   'pages.js',
   'topic-info.js',
   'fixed-buttons.js',
+  'platform.js',
+  'picker.js',
   'zip.js',
   'theme.js',
   'writeSecurity.js',

@@ -71,8 +71,7 @@ marked.use({
 });
 /* 判断一条消息是否是"关联"：第一行是引用预览，第二行是 ∝ 头标签 */
 export function isRelatedMessage(text) {
-  if (!text) return false;
-  return /^>[^\n]*\r?\n∝\s[^\n]*\[\[[^\]]*#\^[^\]]+\]\]/.test(text);
+  return !!parseRelevanceHeader(text);
 }
 
 /* 解析关联头：返回 { preview, label, topicRef, blockId } 或 null。
@@ -277,21 +276,16 @@ export function renderMDCached(src) {
 
 /* 镜像内容不缓存 —— 每次从源头重取，保证同步 */
 function renderMirrorBody(e) {
-  const parts = splitByImage(e.text);
-  let html = '';
-  for (const p of parts) {
-    if (p.img) {
-      html +=
-        '<button type="button" class="mirror-img" title="图片存放在源话题，点击前往查看">' +
-          '<span class="mi-ic">🖼</span>' +
-          '<span class="mi-text">图片需到来源查看</span>' +
-          (p.alt ? '<span class="mi-alt">' + esc(p.alt) + '</span>' : '') +
-        '</button>';
-    } else if (p.t && p.t.trim()) {
-      html += '<span class="etext">' + renderMD(p.t, { noEmbed: true }) + '</span>';
-    }
-  }
-  return html || '<span class="etext"></span>';
+  return renderTextParts(
+    e.text,
+    p =>
+      '<button type="button" class="mirror-img" title="图片存放在源话题，点击前往查看">' +
+        '<span class="mi-ic">🖼</span>' +
+        '<span class="mi-text">图片需到来源查看</span>' +
+        (p.alt ? '<span class="mi-alt">' + esc(p.alt) + '</span>' : '') +
+      '</button>',
+    t => '<span class="etext">' + renderMD(t, { noEmbed: true }) + '</span>'
+  ).html;
 }
 
 /** 单条片段失效 —— 编辑/删除时调用，只清该段，不动其他缓存 */
@@ -333,6 +327,23 @@ export function splitByImage(text) {
   }
   if (last < text.length) parts.push({ t: text.slice(last) });
   return parts;
+}
+
+/* 图片 + Markdown 混排的统一遍历器。
+   renderImage(part) / renderText(part.t) 由调用方决定具体 HTML。 */
+export function renderTextParts(text, renderImage, renderText) {
+  const parts = splitByImage(text || '');
+  let html = '';
+  let hasImg = false;
+  for (const p of parts) {
+    if (p.img) {
+      hasImg = true;
+      html += renderImage(p);
+    } else if (p.t && p.t.trim()) {
+      html += renderText(p.t);
+    }
+  }
+  return { html: html || '<span class="etext"></span>', hasImg };
 }
 
 /* ---------- 解析（磁盘 → entries） ---------- */

@@ -58,9 +58,22 @@ function renderDetails(node, images, introEditing, introDraft) {
   ).join('');
 
   const intro = (node.intro || '').trim();
+  /* 时间精确到秒：去掉 fmtStamp 里的 .mmm 毫秒段 */
+  const sec = s => String(s || '').replace(/\.\d{3}/, '');
+  /* 简介的创建时间 / 最后更新时间：两者不同才显示「最近更新于」 */
+  const introCreatedAt = typeof node.introCreatedAt === 'string' ? sec(node.introCreatedAt) : '';
+  const introAt        = typeof node.introAt === 'string' ? sec(node.introAt) : '';
+  const showIntroUpd   = !!introAt && !!introCreatedAt && introAt !== introCreatedAt;
+  const introMeta =
+    '<div class="topic-intro-meta">' +
+      (introCreatedAt
+        ? '简介创建于 ' + esc(introCreatedAt) +
+          (showIntroUpd ? '<span class="dot">·</span>最近更新于 ' + esc(introAt) : '')
+        : (intro ? '简介创建时间未记录（旧话题）' : '')) +
+    '</div>';
   const introView = intro
-    ? '<div class="topic-intro-view">' + esc(intro).replace(/\n/g, '<br>') + '</div>'
-    : '<div class="topic-intro-view empty">还没有简介</div>';
+    ? '<div class="topic-intro-view">' + esc(intro).replace(/\n/g, '<br>') + '</div>' + introMeta
+    : '<div class="topic-intro-view empty">还没有简介</div>' + introMeta;
   const introEditor =
     '<textarea class="topic-intro" rows="4" placeholder="写一点这个话题的简介…">' +
       esc(introDraft) +
@@ -73,7 +86,7 @@ function renderDetails(node, images, introEditing, introDraft) {
       '<div class="topic-hero-main">' +
         '<h2>' + esc(node.title) + '</h2>' +
         '<div class="topic-hero-path">' + esc(path) + '</div>' +
-        '<div class="topic-hero-created">创建于 ' + esc(createdText) + '</div>' +
+        '<div class="topic-hero-created">创建于 ' + esc(sec(createdText)) + '</div>' +
       '</div>' +
     '</div>' +
     '<div class="topic-stats">' +
@@ -186,12 +199,19 @@ export function openTopicDetails(node) {
     if (btn) btn.disabled = true;
 
     try {
-      const r = await enqueue(() => updateTopicMeta(node, { intro: v }));
+      /* 简介的创建时间只在第一次写入时定，之后只更新 introAt */
+      const stamp = fmtStamp(Date.now());
+      const introCreatedAt = node.introCreatedAt || stamp;
+      const r = await enqueue(() => updateTopicMeta(node, {
+        intro: v, introCreatedAt, introAt: stamp,
+      }));
       if (!r.ok) {
         toast('简介保存失败：' + ((r.err && r.err.message) || r.err || '未知错误'));
         return;
       }
       node.intro = v;
+      node.introCreatedAt = introCreatedAt;
+      node.introAt = stamp;
       introEditing = false;
       introDraft = v;
       api.redraw();
