@@ -20,7 +20,7 @@
 import { $,esc, badgeHTML,badgeColor, countLabel } from './utils.js';
 import { I } from './icons.js';
 import { Store } from './store.js';
-import { fmtStamp,parseStamp,fmtFull } from './format.js';
+import { fmtStamp, parseStamp, fmtFull } from './format.js';
 import { parseRelevanceHeader } from './md.js';
 import { renderEntryBody } from './entries-render.js';
 import { hydrateImages, unobserveImages } from './image.js';
@@ -34,12 +34,20 @@ import { toast, confirmDialog, makeEscapable, openFullPage } from './ui.js';
  * 拾之
  * ============================================================ */
 
+/* 跳到某条记录（关页面 → 切话题 → 闪烁定位）。拾之 / 讨论串共用。 */
+function jumpToEntry(api, nid, eid) {
+  api.close();
+  Store.ui.flashEntry = eid;
+  if (nid && nid !== Store.ui.selectedId) select(nid, { noScrollRestore: true });
+  else renderEntries();
+}
+
 export function pickItPage() {
   const pool = [];
   walk(Store.root, n => { for (const e of n.entries) pool.push({ e, n }); });
   if (!pool.length) { toast('还没有任何记录'); return; }
 
-  let mode = 'random';          // 'random' | 'relevance'
+  let mode = 'random';          // 'random' | 'relations'
   let relActive = null;
   let relGroups = [];
 
@@ -56,7 +64,7 @@ export function pickItPage() {
     return picked;
   }
 
-  /* 关联标题 → 记录列表。标题就是 ∝ 头里的标签。 */
+  /* 关联标题 → 记录列表。标题就是 ∝ 头里的标签。（改回原来的"按标题分组"） */
   function buildRelGroups() {
     const groups = new Map();
     for (const { e, n } of pool) {
@@ -71,13 +79,6 @@ export function pickItPage() {
     for (const g of arr) g.items.sort((a, b) => b.e.createdAt - a.e.createdAt);
     arr.sort((a, b) => b.items.length - a.items.length || a.label.localeCompare(b.label, 'zh'));
     return arr;
-  }
-
-  function goEntry(api, nid, eid) {
-    api.close();
-    Store.ui.flashEntry = eid;
-    if (nid && nid !== Store.ui.selectedId) select(nid, { noScrollRestore: true });
-    else renderEntries();
   }
 
   function renderRandom() {
@@ -96,9 +97,20 @@ export function pickItPage() {
     return cards;
   }
 
-  /* 左侧“关联一览”：把所有关联标题列出来（像回收站的分栏）。 */
+  /* 左侧：常驻模式按钮（随机 / 关联一览）；关联一览里再列"关联标题"（原来的样子） */
   function renderRelSidebar() {
-    let h = '<div class="rel-side-head">关联一览</div>';
+    const modeBtn = (key, label, icon) =>
+      '<button type="button" class="pp-side-item' + (mode === key ? ' on' : '') +
+        '" data-pickit-mode="' + key + '">' +
+        '<span class="pp-side-icon">' + icon + '</span><span>' + label + '</span>' +
+      '</button>';
+
+    let h = modeBtn('random', '随机', I.sparkles) +
+            modeBtn('relations', '关联一览', I.relevance);
+
+    if (mode !== 'relations') return h;
+
+    h += '<div class="rel-side-head">关联标题</div>';
     if (!relGroups.length) {
       h += '<div class="rel-side-empty">还没有关联</div>';
       return h;
@@ -144,18 +156,16 @@ export function pickItPage() {
   let pageEl = null;
 
   openFullPage({
-    title: () => mode === 'relevance' ? '关联一览' : '拾之',
+    title: () => mode === 'relations' ? '关联一览' : '拾之',
     sideClass: 'rel-side',
-    sidebar: () => mode === 'relevance' ? renderRelSidebar() : '',
+    /* 侧栏常驻：模式切换本身就是侧栏按钮，不再占顶部 */
+    sidebar: () => renderRelSidebar(),
 
-    actions: () => mode === 'relevance'
-      ? '<button class="pickit-mode" data-pickit-mode="random">' + I.sparkles + '<span>随机</span></button>' +
-        '<button class="pickit-timearrow">' + I.layers + '<span>时之箭</span></button>'
-      : '<button class="pickit-refresh">' + I.refresh + '<span>换一批</span></button>' +
-        '<button class="pickit-timearrow">' + I.layers + '<span>时之箭</span></button>' +
-        '<button class="pickit-mode" data-pickit-mode="relevance">' + I.relevance + '<span>关联一览</span></button>',
+    actions: () => mode === 'relations'
+      ? ''
+      : '<button class="pickit-refresh">' + I.refresh + '<span>换一批</span></button>',
 
-    render: () => mode === 'relevance' ? renderRelContent() : renderRandom(),
+    render: () => mode === 'relations' ? renderRelContent() : renderRandom(),
 
     afterDraw: (api) => {
       pageEl = api.el;
@@ -172,7 +182,7 @@ export function pickItPage() {
       if (modeBtn) {
         if (pageEl) unobserveImages(pageEl);
         mode = modeBtn.dataset.pickitMode;
-        if (mode === 'relevance') {
+        if (mode === 'relations') {
           relGroups = buildRelGroups();
           relActive = relGroups[0] ? relGroups[0].label : null;
         } else {
@@ -188,10 +198,6 @@ export function pickItPage() {
         api.redraw();
         return;
       }
-      if (ev.target.closest('.pickit-timearrow')) {
-        openTimeArrow();       // 叠在拾之上面，不关拾之
-        return;
-      }
 
       const sideBtn = ev.target.closest('[data-rel-side]');
       if (sideBtn) {
@@ -203,7 +209,7 @@ export function pickItPage() {
 
       const relGo = ev.target.closest('[data-rel-goto]');
       if (relGo) {
-        goEntry(api, relGo.dataset.relNode, relGo.dataset.relGoto);
+        jumpToEntry(api, relGo.dataset.relNode, relGo.dataset.relGoto);
         return;
       }
 
@@ -215,7 +221,7 @@ export function pickItPage() {
         const card = go.closest('[data-node]');
         const nid  = card ? card.dataset.node : null;
         const eid  = go.dataset.pickitGoto;
-        goEntry(api, nid, eid);
+        jumpToEntry(api, nid, eid);
         return;
       }
     },

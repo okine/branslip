@@ -1,5 +1,9 @@
+use std::collections::HashMap;
 use std::fs;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 #[derive(serde::Serialize)]
 struct DirEntry {
@@ -253,6 +257,61 @@ fn copy_dir_tree(from: String, to: String) -> Result<u32, String> {
     Ok(n)
 }
 
+/* ---------- 流式写盘（ZIP 导出用） ----------
+ * write_bytes 每次都要把整份字节传过来；几 GB 的归档在 JS 侧就会 OOM。
+ * 这里开一个长期持有的 BufWriter，按块追加，内存只占一块。
+ */
+
+static ZIP_WRITERS: OnceLock<Mutex<HashMap<u64, BufWriter<fs::File>>>> = OnceLock::new();
+static ZIP_NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+fn zip_writers() -> &'static Mutex<HashMap<u64, BufWriter<fs::File>>> {
+    ZIP_WRITERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[tauri::command]
+fn zip_writer_open(path: String) -> Result<u64, String> {
+    let p = PathBuf::from(&path);
+    if !p.is_absolute() {
+        return Err(format!("导出路径不是绝对路径：{}", path));
+    }
+    if let Some(dir) = p.parent() {
+        fs::create_dir_all(dir).map_err(|e| format!("创建目录失败：{}（{}）", dir.display(), e))?;
+    }
+    let f = fs::File::create(&p).map_err(|e| format!("创建文件失败：{}（{}）", p.display(), e))?;
+    let id = ZIP_NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let mut map = zip_writers().lock().map_err(|e| e.to_string())?;
+    map.insert(id, BufWriter::with_capacity(1 << 20, f));
+    Ok(id)
+}
+
+#[tauri::command]
+fn zip_writer_append(id: u64, b64: String) -> Result<(), String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&b64).map_err(|e| e.to_string())?;
+    let mut map = zip_writers().lock().map_err(|e| e.to_string())?;
+    let w = map.get_mut(&id).ok_or_else(|| format!("写入句柄不存在：{}", id))?;
+    w.write_all(&bytes).map_err(|e| format!("写入失败：{}", e))
+}
+
+#[tauri::command]
+fn zip_writer_close(id: u64) -> Result<u64, String> {
+    let mut map = zip_writers().lock().map_err(|e| e.to_string())?;
+    let mut w = map.remove(&id).ok_or_else(|| format!("写入句柄不存在：{}", id))?;
+    w.flush().map_err(|e| format!("flush 失败：{}", e))?;
+    let f = w.into_inner().map_err(|e| format!("关闭失败：{}", e))?;
+    let n = f.metadata().map(|m| m.len()).unwrap_or(0);
+    Ok(n)
+}
+
+/* 兜底退出：窗口销毁被 ACL 拒绝时（少见，但真发生过），
+   直接用 AppHandle 退出进程，保证"确认关闭"一定关得掉。 */
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -261,7 +320,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_dir, read_text, write_text, read_bytes_b64,
             write_bytes, mkdir, exists, remove_entry, rename_path,
-            open_folder, default_storage_dir, can_write_dir, copy_dir_tree
+            open_folder, default_storage_dir, can_write_dir, copy_dir_tree,
+            zip_writer_open, zip_writer_append, zip_writer_close, quit_app
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

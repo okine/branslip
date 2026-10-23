@@ -40,6 +40,19 @@ export function countLabel(n) {
   return v > 999 ? '999+' : String(Math.floor(v));
 }
 
+/**
+ * 按标题过滤话题列表（导入时的话题选择器用）。
+ * 大小写不敏感、只匹配标题；空查询返回全部。
+ * @param {Array<{title?:string}>} items
+ * @param {string} q
+ */
+export function filterTopicsByTitle(items, q) {
+  const list = Array.isArray(items) ? items : [];
+  const s = String(q == null ? '' : q).trim().toLowerCase();
+  if (!s) return list.slice();
+  return list.filter(it => String((it && it.title) || '').toLowerCase().includes(s));
+}
+
 /* 列表分页的统一基准值。需要调整时只改这里；
    各模块按用途读取，不再各自写 40 / 80 / 120。 */
 

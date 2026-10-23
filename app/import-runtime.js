@@ -29,6 +29,7 @@ import { uid } from './utils.js';
 import {
   fmtStamp, fmtStampAtTz, monthKey,
   stampForWrite, entryBlockId, localIdFromMs,
+  monthKeyOfEntry, dayKeyOfEntry,
 } from './format.js';
 import { sanitizeName, uniqueName, resolveFile, dirOf, writeOrder, writeMonthFile } from './io.js';
 import { atomicWriteText } from './writeSecurity.js';
@@ -167,7 +168,7 @@ function computeDepths(node) {
   return node._depth;
 }
 
-function assignTimes(node, parentAt) {
+function assignTimes(node, parentAt, fallbackAt) {
     /* 只有带 message 的节点代表真实消息，参与时间修正。
      message: null 的节点（虚拟根、DeepSeek 的占位 root）是纯容器，
      跳过修正、也不推进 cur —— 否则它们的 at=0 会被误判为「缺时间」
@@ -176,8 +177,11 @@ function assignTimes(node, parentAt) {
      修正分两种：
        'bump'  —— 为了让时间严格递增（父时间 + 1ms）。
                   原始 rawStamp 依然可信，只差 1ms，可重新生成。
-       'infer' —— 整条父链都没有时间，用 Date.now() 兜底。
-                  rawStamp 与真实时间差距未知，直接丢弃。 */
+       'infer' —— 整条父链都没有时间。用 fallbackAt（对话的 inserted_at /
+                  树里最早的时间）兜底，**绝不使用 Date.now()**：
+                  用"现在"会让导入的记录排在所有真实记录之后，
+                  blockId 也随之改变，引用和回复计数都会错位。
+                  只有在整份文件一点时间信息都没有时才落到 1。 */
   let cur = parentAt;
   if (node.message) {
     if (!node.at || node.at <= parentAt) {
@@ -185,13 +189,13 @@ function assignTimes(node, parentAt) {
         node.at = parentAt + 1;
         node._atAdjusted = 'bump';
       } else {
-        node.at = Date.now();
+        node.at = (fallbackAt && fallbackAt > 0) ? fallbackAt : 1;
         node._atAdjusted = 'infer';
       }
     }
     cur = node.at;
   }
-  for (const c of node.children) assignTimes(c, cur);
+  for (const c of node.children) assignTimes(c, cur, fallbackAt);
 }
 
 /* ============================================================
@@ -242,9 +246,12 @@ export function extractFromTree(tree, opts) {
     tzOffset = -new Date().getTimezoneOffset(),
   } = opts;
 
+  /* 兜底时间：源 created_at → 树里最早的时间 → 1（1970，明确表示"不知道"）。
+     ★ 绝不使用 Date.now()：导入要保留原始时间，用"现在"会让记录排到最后，
+       blockId 也变，引用和回复计数全部错位。 */
   const baseMs = Number.isFinite(sourceCreatedAt) && sourceCreatedAt > 0
     ? sourceCreatedAt
-    : (findFirstAt(tree) || Date.now());
+    : (findFirstAt(tree) || 1);
 
   const root = {
     scopeId: nextScopeId(),
@@ -254,10 +261,27 @@ export function extractFromTree(tree, opts) {
     branches: [],
   };
 
+  rescueInferredTimes(tree, baseMs);
   walkSubtree(tree, null, root, extractContent, tzOffset);
   normalizeAll(root);
   freezeWriteStamps(root);
   return root;
+}
+
+/**
+ * 把"完全没有时间"的消息从占位值（1）挪到 baseMs 起的连续毫秒。
+ * 这样导入的记录仍然落在**源对话的年份**里，而不是 1970 / 或今天。
+ */
+function rescueInferredTimes(node, startMs) {
+  let t = startMs;
+  const visit = n => {
+    if (n.message && n._atAdjusted === 'infer') {
+      n.at = t;
+      t += 1;
+    }
+    for (const c of n.children) visit(c);
+  };
+  visit(node);
 }
 
 function findFirstAt(node) {
@@ -267,6 +291,17 @@ function findFirstAt(node) {
     if (r) return r;
   }
   return 0;
+}
+
+/* 树里最早的消息时间 —— 比"第一条"更稳（源里可能乱序） */
+function findMinAt(node) {
+  let best = 0;
+  const visit = n => {
+    if (n.at && (!best || n.at < best)) best = n.at;
+    for (const c of n.children) visit(c);
+  };
+  visit(node);
+  return best;
 }
 
 let scopeCounter = 0;
@@ -355,6 +390,12 @@ function walkSubtree(node, parentUser, ctx, extractContent, defaultTz) {
     if (!subCtx.entries.length) continue;
     subCtx.createdAtMs = subCtx.entries[0].createdAt;
     subCtx.title = branchTitle(subCtx);
+    /* 重试留下的"服务器繁忙"之类分支不建子话题：信息量为零，
+       却会在树里堆出 "<<分支> 服务器繁忙，请稍后再试。 2/3/4/5"。 */
+    if (isTransientFailureBranch(subCtx)) {
+      ctx._skippedTransient = (ctx._skippedTransient || 0) + 1;
+      continue;
+    }
     ctx.branches.push(subCtx);
   }
 }
@@ -418,6 +459,37 @@ export function branchTitle(branch) {
   if (!first) return '[分支]';
   const head = previewText(first.text, 20) || '分支';
   return '[分支] ' + head;
+}
+
+/* ============================================================
+ * 临时性失败消息（重试产生的噪音分支）
+ * ============================================================ */
+
+/* 这些是「服务端临时故障 / 拒答」的固定话术。DeepSeek 导出的 mapping 里，
+   每次重试都会留下一个只含这句话的分支节点；直接按分支导入会生成一堆
+   名字几乎相同的子话题（这个样本里 7 个分支有 5 个是「服务器繁忙」）。 */
+const TRANSIENT_FAILURE_RE = new RegExp([
+  '服务器繁忙',
+  '服务繁忙',
+  '请稍后再试',
+  '请稍后重试',
+  '网络异常',
+  '网络错误',
+  '网络连接失败',
+  '请求失败',
+  '系统繁忙',
+  '该对话已被删除',
+  '这个问题我暂时无法回答',
+  '让我们换个话题',
+].join('|'));
+
+/** 只有"单条、短、且是固定失败话术"的分支才认为没有价值。 */
+export function isTransientFailureBranch(branch) {
+  if (!branch || !branch.entries || branch.entries.length !== 1) return false;
+  if (branch.branches && branch.branches.length) return false;
+  const text = previewText(branch.entries[0].text, 80);
+  if (!text || text.length > 60) return false;
+  return TRANSIENT_FAILURE_RE.test(text);
 }
 
 /* ============================================================
@@ -511,7 +583,7 @@ async function writeTopic(parentDir, topic, source, opts, onImage) {
     _dir: dir,
     entries: topic.entries,
   };
-  const months = new Set(topic.entries.map(e => monthKey(e.createdAt)));
+  const months = new Set(topic.entries.map(e => monthKeyOfEntry(e)));
   for (const mk of months) await writeMonthFile(node, mk);
 
   const topicCreatedAt = fmtStamp(topic.createdAtMs);
@@ -647,7 +719,7 @@ export function finalizeFlatTopic(entries, opts) {
     title: opts.title || '',
     createdAtMs: (Number.isFinite(opts.sourceCreatedAt) && opts.sourceCreatedAt > 0)
       ? opts.sourceCreatedAt
-      : (sorted[0] ? sorted[0].createdAt : Date.now()),
+      : (sorted[0] ? sorted[0].createdAt : 1),
     entries: sorted,
     branches: [],
   };
@@ -668,6 +740,52 @@ export function initImportPicker() {
   document.body.appendChild(input);
   return input;
 }
+
+/* 一条对话里有多少条记录（只为在选择器里显示个数字）
+   注意要连分支一起算：分支会被导入成子话题，只数主路径会少报。 */
+function convCount(conv) {
+  const root = conv && conv.root;
+  return root ? countEntries(root) : 0;
+}
+
+/**
+ * 用话题选择器挑要导入哪些对话。
+ * 解析阶段就知道所有标题，所以这里给的是"外部列表"（这些话题还不在库里）。
+ * @returns {Promise<number[]|null>} 选中的下标；取消返回 null
+ */
+function pickConversations(openTopicPicker, conversations) {
+  return new Promise(resolve => {
+    let settled = false;
+    const done = v => { if (!settled) { settled = true; resolve(v); } };
+
+    const items = conversations.map((c, i) => ({
+      id: String(i),
+      title: c && c.title ? c.title : '未命名',
+      subtitle: convCount(c) + ' 条',
+    }));
+
+    const md = openTopicPicker({
+      mode: 'multi',
+      search: true,
+      title: '要导入哪些话题？',
+      hint: '文件里有 ' + conversations.length + ' 个话题，只导入勾选的（可搜索标题）。',
+      okText: '导入选中',
+      items,
+      preselect: items.map(it => it.id),
+      onPickMulti: ids => done(ids.map(Number)),
+    });
+
+    /* 取消 / Esc 关掉模态时也要 resolve，否则流程会挂住 */
+    const root = (typeof document !== 'undefined') ? document.getElementById('modalRoot') : null;
+    if (root && md && typeof MutationObserver === 'function') {
+      const obs = new MutationObserver(() => {
+        if (!md.isConnected) { obs.disconnect(); done(null); }
+      });
+      obs.observe(root, { childList: true, subtree: true });
+    }
+  });
+}
+
 
 async function showImportConfirmDialog(source, count, ui) {
   return new Promise(resolve => {
@@ -798,6 +916,16 @@ export async function runImportFile(file, deps) {
     return;
   }
 
+  /* ★ 一个文件里通常有多个对话：先让用户按标题挑要导入哪些。
+     这些话题还没进库，所以用"外部列表"模式 + 搜索，不走话题树。 */
+  if (conversations.length > 1) {
+    const { openTopicPicker } = await import('./ui-topicPicker.js');
+    const picked = await pickConversations(openTopicPicker, conversations);
+    if (picked === null) { ui.toast('已取消导入'); return; }
+    if (!picked.length) { ui.toast('没有选中任何话题'); return; }
+    conversations = picked.map(i => conversations[i]);
+  }
+
   const { ok, photoDir } = await showImportConfirmDialog(source, conversations.length, ui);
   if (!ok) return;
 
@@ -822,8 +950,16 @@ export async function runImportFile(file, deps) {
 
       renderAll();
       if (nodes[0]) select(nodes[0].id);
-      ui.toast('已导入 ' + nodes.length + ' 个话题，共 ' +
-        nodes.reduce((s, n) => s + n.entries.length, 0) + ' 条记录');
+      /* 统计要把分支算进去：分支是作为子话题写进去的，
+         只数 nodes 的 entries 会少报（这个导出样本里 160 条会报成 152）。 */
+      let topicCount = 0, entryCount = 0;
+      const tally = n => {
+        topicCount++;
+        entryCount += n.entries.length;
+        for (const c of n.children || []) tally(c);
+      };
+      for (const n of nodes) tally(n);
+      ui.toast('已导入 ' + topicCount + ' 个话题，共 ' + entryCount + ' 条记录');
       console.log('[import] 识别为', source, '，解析出', conversations.length, '个对话');
     } catch (e) {
       console.error('[import]', e);

@@ -39,8 +39,12 @@ function sanitizeUTF8(str) {
  */
 export async function atomicWriteText(dir, name, text) {
 
-   // ★ 在写入前清洗
-   const cleanText = sanitizeUTF8(text);
+  /* ★ 只在入口清洗一次。
+     以前 .tmp 写的是原始 text、正式文件写的是 text、校验却用 cleanText：
+     一旦清洗真的改了内容（不完整代理项），校验就必然失败，而且 .tmp 和
+     正式文件的内容也不一致（崩溃恢复出来的会是未清洗版本）。 */
+  const cleanText = sanitizeUTF8(text);
+
   /* Tauri 分支 */
   if (PLATFORM.isTauri) {
     await Storage.writeText(dir, name, cleanText);
@@ -52,17 +56,16 @@ export async function atomicWriteText(dir, name, text) {
 
   const tmpFh = await dir.getFileHandle(tmpName, { create: true });
   const w = await tmpFh.createWritable();
-  await w.write(text + TMP_TRAILER);
+  await w.write(cleanText + TMP_TRAILER);
   await w.close();
 
   const final = await dir.getFileHandle(name, { create: true });
   const w2 = await final.createWritable();
-  await w2.write(text);
+  await w2.write(cleanText);
   await w2.close();
 
   /* 写后读校验 —— 磁盘真写坏了能立刻发现 */
   const check = await Storage.readText(dir, name);
-  // ★ 用 cleanText 比对
   if (check !== cleanText) {
     throw new Error('写入校验失败：' + name);
   }

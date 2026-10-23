@@ -11,6 +11,7 @@ import {
   previewText,
   branchTitle,
   countEntries,
+  isTransientFailureBranch,
 } from '../import-runtime.js';
 
 /* ============================================================
@@ -604,4 +605,48 @@ test('容器节点下第一条消息带时间时，整棵子树不被拉到 Date
   ]);
   assert.ok(tree.children[0].at < before, '子消息不该等于或大于当前时间');
   assert.equal(tree.children[0]._atAdjusted, undefined, '不该被标记为修正过');
+});
+/* ============================================================
+ * isTransientFailureBranch（重试产生的噪音分支）
+ * ============================================================ */
+
+const mkBranch = (texts) => ({ entries: texts.map(t => ({ text: t })), branches: [] });
+
+test('服务器繁忙类单条短分支→当噪音跳过', () => {
+  assert.equal(isTransientFailureBranch(mkBranch(['服务器繁忙，请稍后再试。'])), true);
+  assert.equal(isTransientFailureBranch(mkBranch(['网络异常，请稍后重试'])), true);
+  assert.equal(isTransientFailureBranch(mkBranch(['你好，这个问题我暂时无法回答，让我们换个话题再聊聊吧。'])), true);
+});
+
+test('正常回答 / 多条 / 有子分支的不跳', () => {
+  assert.equal(isTransientFailureBranch(mkBranch(['这是一个正常的回答。'])), false);
+  assert.equal(isTransientFailureBranch(mkBranch(['服务器繁忙', '补充一条'])), false);
+  const withSub = mkBranch(['服务器繁忙']);
+  withSub.branches.push(mkBranch(['x']));
+  assert.equal(isTransientFailureBranch(withSub), false);
+  assert.equal(isTransientFailureBranch(null), false);
+});
+
+test('长文本（超 60 字）不跳，避免误伤', () => {
+  const long = '服务器繁忙' + '啊'.repeat(80);
+  assert.equal(isTransientFailureBranch(mkBranch([long])), false);
+});
+
+test('导入：没有时间戳的消息用对话时间兜底，不用 Date.now()', () => {
+  const SRC = Date.parse('2025-02-11T09:42:22.105+08:00');
+  const tree = buildMessageTree([
+    makeMessage('a', 0, { raw: {} }),
+    makeMessage('b', 0, { parentId: 'a', raw: {} }),
+  ]);
+  const root = extractFromTree(tree, {
+    title: 'x', sourceCreatedAt: SRC,
+    extractContent: () => ({ role: 'user', text: 'hi' }),
+  });
+  assert.equal(root.createdAtMs, SRC);
+  assert.equal(root.entries.length, 2);
+  for (const e of root.entries) {
+    const d = Math.abs(e.createdAt - SRC);
+    assert.ok(d < 10, '时间应落在对话的 2025 年，而不是今天：' + e.createdAt);
+  }
+  assert.ok(root.entries[0].createdAt < root.entries[1].createdAt, '仍然保持顺序');
 });

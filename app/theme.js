@@ -333,8 +333,18 @@ function openThemePop(anchor) {
 
   const r = (anchor || $('#themeBtn') || $('#tbTheme')).getBoundingClientRect();
   const pw = pop.offsetWidth, ph = pop.offsetHeight;
-  pop.style.left = Math.max(8, Math.min(r.left, innerWidth - pw - 8)) + 'px';
-  pop.style.top = Math.max(8, r.top - ph - 8) + 'px';
+  const narrow = typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(max-width: 860px)').matches;
+  if (narrow) {
+    /* 手机：贴着按钮上方展开 */
+    pop.style.left = Math.max(8, Math.min(r.left, innerWidth - pw - 8)) + 'px';
+    pop.style.top = Math.max(8, r.top - ph - 8) + 'px';
+  } else {
+    /* 桌面：放在工具栏右侧，不盖住按钮 */
+    pop.style.left = Math.max(8, Math.min(r.right + 10, innerWidth - pw - 8)) + 'px';
+    pop.style.top = Math.max(8, Math.min(r.top, innerHeight - ph - 8)) + 'px';
+  }
 
 
   const key = THEME_KEY[themeTab];

@@ -73,10 +73,8 @@ export function renderPins() {
       '<span class="p-ic">' + I.pin + '</span>' +
       '<span class="t">' + esc(prev.slice(0, 60)) + '</span>' +
     '</button>' +
-    (list.length > 1
-      ? '<span class="pin-sep">丨</span><button class="pin-cnt">共 ' + countLabel(list.length) + ' 条</button>'
-      : '') +
-    '<button class="pin-more" title="查看全部置顶">' + I.menu + '<span>全部置顶</span></button>';
+    
+    '<button class="pin-more" title="查看全部置顶">' + I.menu + '</button>';
   bar.style.display = 'flex';
 }
 

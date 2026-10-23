@@ -223,6 +223,56 @@ function monthKey(ts) {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
 }
 
+/* ============================================================
+ * 条目自己的时区（身份层）—— 月份/日期归属必须以它为准
+ * ============================================================
+ *
+ * 为什么不能直接用 monthKey(createdAt)：
+ *   它按**设备本地时区**取年月日，而磁盘上 `## ` 行写的是
+ *   _writeStamp 自带的偏移。同一毫秒在上海写进 `_记录-2026-01.md`、
+ *   在纽约再打开就会显示成 2025-12，文件归属和显示时间对不上。
+ *
+ * 规则：月份/日期归属 = `_writeStamp`（或 `_rawStamp`）里的**字面字段**；
+ *   没有磁盘串时才退回 _tzOffset；再没有才用本地时区。
+ */
+
+/* 条目自带偏移（分钟，东区为正） */
+function entryTzOffset(e) {
+  const s = e && (e._writeStamp || e._rawStamp);
+  if (s) {
+    const tz = tzOffsetFromStamp(s);
+    if (tz != null) return tz;
+  }
+  if (e && e._tzOffset != null) return e._tzOffset;
+  return -new Date().getTimezoneOffset();
+}
+
+/* 月份归属：优先用磁盘串的 'YYYY-MM' 字面值 */
+function monthKeyOfEntry(e) {
+  if (!e) return monthKey(Date.now());
+  const s = e._writeStamp || e._rawStamp;
+  if (s) {
+    const m = String(s).match(/^(\d{4})-(\d{2})/);
+    if (m) return m[1] + '-' + m[2];
+  }
+  const off = entryTzOffset(e);
+  const d = new Date(e.createdAt + off * 60000);
+  return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0');
+}
+
+/* 日期分组 key：同样按条目自己的偏移取年月日 */
+function dayKeyOfEntry(e) {
+  if (!e) return dayKey(Date.now());
+  const s = e._writeStamp || e._rawStamp;
+  if (s) {
+    const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return (+m[1]) + '-' + (+m[2] - 1) + '-' + (+m[3]);   /* 与 dayKey 同构（月从 0 起） */
+  }
+  const off = entryTzOffset(e);
+  const d = new Date(e.createdAt + off * 60000);
+  return d.getUTCFullYear() + '-' + d.getUTCMonth() + '-' + d.getUTCDate();
+}
+
 /* 月文件名 —— 必须与 MONTH_RE 保持同步 */
 function monthFileName(mk) { return '_记录-' + mk + '.md'; }
 const MONTH_RE = /^_记录-(\d{4}-\d{2})\.md$/;
@@ -290,6 +340,10 @@ export {
   dayKey,
   fmtDay,
   monthKey,
+  /* 条目级（按条目自己的时区归属）—— 写入月文件 / 日期分组必须用这两个 */
+  monthKeyOfEntry,
+  dayKeyOfEntry,
+  entryTzOffset,
   monthFileName,
   MONTH_RE,
   dayKeyNum,

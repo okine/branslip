@@ -7,12 +7,11 @@
 import { $, esc, badgeHTML, PAGING } from './utils.js';
 import { I } from './icons.js';
 import { Store } from './store.js';
-import { dayKey, fmtDay } from './format.js';
 import { hydrateImages } from './image.js';
 import { enqueue } from './writer.js';
 import { theme, writeTheme } from './theme.js';
 import {
-  toast, openMenu, closeSide, pushEsc, toggleMenu
+  toast, openMenu, closeSide, pushEsc, toggleMenu, menuPlacement
 } from './ui.js';
 import { openTopicPicker } from './ui-topicPicker.js';
 import { walk } from './tree-utils.js';
@@ -24,6 +23,7 @@ import {
 } from './entries-render.js';
 import { ensureGlobalMeta } from './meta-row.js';
 import { captureScrollAnchor, restoreScrollAnchor } from './scroll-utils.js';
+import { dayKey, fmtDay, dayKeyOfEntry } from './format.js';
 /* ---------- 依赖注入 ---------- */
 let D = { renderAll: () => {} };
 export function wireMerge(h) { Object.assign(D, h); }
@@ -92,13 +92,13 @@ function renderMergedRange() {
         start + ' 条</div>';
   }
 
-  let lastDay = start > 0 ? dayKey(list[start - 1].e.createdAt) : '';
+  let lastDay = start > 0 ? dayKeyOfEntry(list[start - 1].e) : '';
   let idx = 0;
   for (let i = start; i < end; i++) {
     const { e, n } = list[i];
-    const dk = dayKey(e.createdAt);
+    const dk = dayKeyOfEntry(e);
     if (dk !== lastDay) {
-      h += dayChipHTML(e.createdAt, idx);
+      h += dayChipHTML(e.createdAt, idx, e);
       lastDay = dk; idx++;
     }
     h += entryHTML(e, idx, n); idx++;
@@ -130,19 +130,23 @@ function loadEarlierMerged() {
     const list = mergedList;
 
     let h = '';
-    let lastDay = start > 0 ? dayKey(list[start - 1].e.createdAt) : '';
+    let lastDay = start > 0 ? dayKeyOfEntry(list[start - 1].e) : '';
     let idx = 0;
     for (let i = start; i < end; i++) {
       const { e, n } = list[i];
-      const dk = dayKey(e.createdAt);
+      const dk = dayKeyOfEntry(e);
       if (dk !== lastDay) {
-        h += dayChipHTML(e.createdAt, idx);
+        h += dayChipHTML(e.createdAt, idx, e);
         lastDay = dk; idx++;            
       }
       h += entryHTML(e, idx, n); idx++;
     }
 
-    sentinel.insertAdjacentHTML('beforebegin', h);
+    /* ★ 哨兵必须永远待在列表最上面（和 entries-jump 的 loadSlice 同一规则）。
+       以前插在哨兵"前面"，每加载一批哨兵就往下沉，几十批后跑到内容底部，
+       滚到顶再也碰不到它 —— "时间流里加载一定条数后就加载不动"。 */
+    if (box.firstElementChild !== sentinel) box.insertBefore(sentinel, box.firstChild);
+    sentinel.insertAdjacentHTML('afterend', h);
     mergedStart = start;
     if (start === 0) sentinel.remove();
     else sentinel.textContent = '向上滚动加载更早的记录 · 还有 ' + start + ' 条';
@@ -161,11 +165,22 @@ function armMergedLoadEarlier() {
   const sentinel = document.getElementById('loadEarlier');
   if (!sentinel) return;
   mergedIO = new IntersectionObserver(ents => {
-    if (!ents[0].isIntersecting) return;
+    if (!ents.some(e => e.isIntersecting)) return;
     clearMergedObs();
-    loadEarlierMerged();
-    if (document.getElementById('loadEarlier')) armMergedLoadEarlier();
-  }, { root: document.getElementById('entriesScroll'), rootMargin: '200px 0px' });
+    try {
+      if (!Store.ui.merged) return;          /* 已经退出时间流了 */
+      loadEarlierMerged();
+    } catch (err) {
+      console.error('[loadEarlierMerged] 出错', err);
+    } finally {
+      /* 抛错也要重挂，否则一次异常就永久失去加载能力 */
+      if (Store.ui.merged && document.getElementById('loadEarlier')) armMergedLoadEarlier();
+    }
+  }, {
+    root: null,                            /* viewport：不猜哪个元素在滚 */
+    rootMargin: '600px 0px',
+    threshold: 0,
+  });
   mergedIO.observe(sentinel);
 }
 
@@ -219,12 +234,17 @@ export function exitMerge() {
 
 /* ---------- 菜单 ---------- */
 
-export function openMergeMenu(anchor) {
-  /* 合并菜单开着时再点同一个按钮 → 收起（见 ui.toggleMenu） */
+export function openMergeMenu(anchor, extra) {
+  /* 菜单开着时再点同一个按钮 → 收起（见 ui.toggleMenu） */
   if (toggleMenu(anchor)) return;
   const items = [];
   items.push({ icon: I.layers, label: '全部时间流', fn: () => enterMerge('all') });
   items.push({ icon: I.plus, label: '选择话题合并…', fn: openMergePicker });
+  /* 时之箭从「拾之」页挪到这里：它本质是"看法"的切换，和模式放一起更顺 */
+  const arrow = extra && extra.onTimeArrow;
+  if (typeof arrow === 'function') {
+    items.push({ icon: I.layers, label: '时之箭', fn: () => arrow() });
+  }
   items.push({
     icon: I.reply,
     label: theme.dialogue ? '关闭对谈模式' : '开启对谈模式',
@@ -234,7 +254,8 @@ export function openMergeMenu(anchor) {
     items.push({ sep: true });
     items.push({ icon: I.x, label: '退出时间流', fn: exitMerge });
   }
-  openMenu(anchor, items);
+  /* 桌面：开在工具栏右侧（不挡按钮）；手机：开在按钮上方 */
+  openMenu(anchor, items, menuPlacement());
 }
 
 function openMergePicker() {

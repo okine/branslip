@@ -135,11 +135,15 @@ export function select(id, opts) {
   setReply(null);
   setRelevance(null);
 
-  /* ★ 丢掉上一个话题里没发送的图片 blob。
-     草稿只存文本，图片引用不会跟着走；切回来也不是同一份输入框内容了，
-     这些 Blob 再没人能给它们建立引用。不清的话它们会一直占着内存，
-     直到重连 / 重扫 / 删话题才被 clearPendingForNode 收走。 */
-  if (prevId && prevId !== id) clearPendingForNode(prevId);
+  /* ★ 丢弃上一个话题里没发送的图片 blob —— 但只在"它没有草稿"时。
+     有草稿的话题，正文里可能还带着 ![](attachments/…)：blob 一清就是死链，
+     切回来草稿是完整的文字、图片却永远显示不出来。
+     草稿在每次 input 时都写回 Store.ui.drafts，textarea 里还有字说明也有草稿。 */
+  if (prevId && prevId !== id) {
+    const ta0 = document.querySelector('#inputArea');
+    const hasDraft = Store.ui.drafts.has(prevId) || !!(ta0 && String(ta0.value || '').trim());
+    if (!hasDraft) clearPendingForNode(prevId);
+  }
 
   let p = findParent(id);
   while (p && p.id !== '__root__') { Store.collapsed.delete(pOf(p)); p = findParent(p.id); }
@@ -485,6 +489,12 @@ treeBox.addEventListener('click', e => {
 });
 
 treeBox.addEventListener('contextmenu', e => {
+  /* 行内按钮（拖拽手柄 / 折叠箭头 / 更多操作）上不弹菜单：
+     手机上长按这些按钮本来是要做它们自己的事，弹菜单会把点击吃掉。 */
+  if (e.target.closest('.handle, .chev, .rbtn, [data-act]')) {
+    e.preventDefault();
+    return;
+  }
   const row = e.target.closest('.node-row');
   if (!row || row.classList.contains('creating')) return;
   if (e.target.closest('input')) return;

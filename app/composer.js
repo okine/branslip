@@ -171,13 +171,40 @@ function nextCreatedAt(node) {
 }
 function flushPendingImages(n, text) {
   const RE = /!\[[^\]]*\]\(attachments\/([^)\s]+)\)/g;
-  for (const m of text.matchAll(RE)) {
-    const path = 'attachments/' + m[1];
-    const p = takePendingBlob(n, path);
-    if (!p) continue;
+  const refs = [...text.matchAll(RE)].map(m => m[1]);
+
+  /* 第一趟：把待写 blob 拿出来（takePendingBlob 会从 pending 里删掉） */
+  const pending = new Map();
+  const orphans = [];                    // 有引用但没有待写 blob 的图片名
+  for (const name of refs) {
+    const p = takePendingBlob(n, 'attachments/' + name);
+    if (p) pending.set(name, p);
+    else orphans.push(name);
+  }
+
+  for (const [name, p] of pending) {
     enqueue(async () => {
       const adir = await Storage.getDir(p.node._dir, 'attachments', { create: true });
       await Storage.writeBlob(adir, p.name, p.blob);
+    });
+  }
+
+  /* 第二趟：没有 blob 的，可能是早就写到磁盘上的旧图（正常），
+     也可能真的丢了（比如切话题时被清掉）。异步确认后只提示一次。 */
+  if (orphans.length) {
+    enqueue(async () => {
+      const gone = [];
+      let adir = null;
+      try { adir = await Storage.getDir(n._dir, 'attachments', { create: false }); } catch (e) {}
+      for (const name of orphans) {
+        let kind = null;
+        try { if (adir) kind = await Storage.exists(adir, name); } catch (e) {}
+        if (!kind) gone.push(name);
+      }
+      if (gone.length) {
+        toast('有 ' + gone.length + ' 张图片的数据已经丢了：' + gone[0] +
+          (gone.length > 1 ? ' 等' : '') + '。正文仍保留引用，但会显示为缺图。');
+      }
     });
   }
 }

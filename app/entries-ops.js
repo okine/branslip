@@ -18,12 +18,12 @@
  *   setReply / renderAll（转发自 entries.js 的 D）
  */
 
-import { $ } from './utils.js';
+import { $, esc,countLabel } from './utils.js';
 import { I } from './icons.js';
 import { Store } from './store.js';
 import { Mutate } from './mutate.js';
-import { fmtStamp } from './format.js';
-import { IMG_RE, buildRef, splitByImage, invalidateMDCache, listRelevanceTitles } from './md.js';
+import { fmtStamp, entryBlockId } from './format.js';
+import { IMG_RE, buildRef, splitByImage, invalidateMDCache, listRelevanceTitles, stripQuoteHeader } from './md.js';
 import {
   persistMonthOf, pushTrash, writePins, writeFolds,
   copyAttachment, TRASH_MAX,
@@ -31,10 +31,11 @@ import {
 import { enqueue } from './writer.js';
 import { pathTitles } from './tree-utils.js';
 import { scrollIntoViewIn, flashEl } from './scroll-utils.js';
-import { openTopicLightbox } from './image.js';
+import { openTopicLightbox, hydrateImages, unobserveImages } from './image.js';
 import { jumpToRow } from './entries-jump.js';
-import { toast, confirmDialog,pushEsc, promptInput } from './ui.js';
+import { toast, confirmDialog,pushEsc, promptInput, openFullPage } from './ui.js';
 import { openMovePicker } from './ui-topicPicker.js';
+import { ensureGlobalMeta, getMetaCounts } from './meta-row.js';
 import { diffGlobalMetaFor, removeGlobalMetaFor, addGlobalMetaFor,refreshAllRowMeta,
   scanEntryRefs } from './meta-row.js';
 
@@ -496,6 +497,11 @@ function refString(node, ent) {
 /* 每一项的构造函数 —— ctx = { n, ent, isSel, opts, D }
  *   返回菜单项对象；返回 null 表示"当前情况下不适用"，会被过滤掉。 */
 const MENU_ITEMS = {
+  thread: c => ({
+    icon: I.reply, label: '讨论串',
+    fn: () => openThreadPage(c.ent.id),
+  }),
+
   reply: c => c.opts.readonly ? null : {
     icon: I.reply, label: '回复',
     fn: () => c.D.setReply(c.ent),
@@ -583,6 +589,7 @@ const MENU_ITEMS = {
 const MENU_ORDER = [
   'reply','edit', 
   'copyFull', 'copyRef',
+  'thread',
   'relevance','pin', 'select',
   'move',
   'sep', 'del',
@@ -720,4 +727,103 @@ export function handleEntriesClick(e) {
   else if (act === 'del') enterDelConfirm(eid, n);
   else if (act === 'moveEntry') moveEntryTo(ent, n);
   else if (act === 'pin') D.toggleEntryPin(n, ent);
+}
+/* ============================================================
+ * 讨论串：在一条消息上打开（整页壳复用拾之）
+ * ============================================================
+ *
+ * 右侧列的是"引用这条消息的记录"（回复 / 关联 / 镜像）。
+ * 数据取主列表同一套倒排索引，保证和行尾徽章的数字一致。
+ */
+export function openThreadPage(entryId) {
+  const hit = Store.entry(entryId);
+  if (!hit) { toast('找不到这条记录'); return; }
+
+  const self = hit.e;
+  const selfNode = hit.node;
+  const bid = entryBlockId(self);
+
+  const KINDS = [
+    { key: 'reply',     label: '回复', icon: 'reply' },
+    { key: 'relevance', label: '关联', icon: 'relevance' },
+    { key: 'mirror',    label: '镜像', icon: 'layers' },
+  ];
+
+  ensureGlobalMeta();
+  const meta = getMetaCounts();
+  const lists = {};
+  for (const k of KINDS) {
+    const set = meta[k.key] && meta[k.key].get(bid);
+    const arr = [];
+    if (set) for (const eid of set) {
+      const h = Store.entry(eid);
+      if (h) arr.push({ e: h.e, n: h.node });
+    }
+    arr.sort((a, b) => a.e.createdAt - b.e.createdAt);
+    lists[k.key] = arr;
+  }
+
+  let kind = 'reply';
+  let pageEl = null;
+
+  const sidebar = () => KINDS.map(k =>
+    '<button type="button" class="pp-side-item' + (kind === k.key ? ' on' : '') +
+      '" data-thread-kind="' + k.key + '">' +
+      '<span class="pp-side-icon">' + (I[k.icon] || '') + '</span><span>' + k.label + '</span>' +
+      '<span class="pp-side-count">' + countLabel(lists[k.key].length) + '</span>' +
+    '</button>'
+  ).join('');
+
+  const render = () => {
+    const rows = lists[kind].map(({ e, n }) => {
+      const preview = stripQuoteHeader(e.text).replace(/\s+/g, ' ').trim().slice(0, 80);
+      return '<button type="button" class="rel-item" data-thread-goto="' + e.id +
+        '" data-thread-node="' + n.id + '">' +
+        '<span class="rel-preview">' + esc(preview || '（无正文）') + '</span>' +
+        '<span class="rel-src">' + esc(n.title) + '</span>' +
+      '</button>';
+    }).join('');
+
+    const selfPreview = stripQuoteHeader(self.text).replace(/\s+/g, ' ').trim().slice(0, 160);
+    const kindLabel = (KINDS.find(k => k.key === kind) || KINDS[0]).label;
+
+    return '<div class="rel-page">' +
+      '<div class="rel-group">' +
+        '<div class="rel-group-head">' +
+          '<span class="rel-tag">这条消息</span>' +
+          '<span class="rel-count">' + esc(selfNode.title) + ' · ' + esc(fmtStamp(self.createdAt)) + '</span>' +
+        '</div>' +
+        '<div class="thread-self">' + esc(selfPreview || '（无正文）') + '</div>' +
+      '</div>' +
+      '<div class="rel-group">' +
+        '<div class="rel-group-head">' +
+          '<span class="rel-tag">' + kindLabel + '</span>' +
+          '<span class="rel-count">' + countLabel(lists[kind].length) + ' 条</span>' +
+        '</div>' +
+        '<div class="rel-items">' +
+          (rows || '<div class="rel-side-empty">还没有' + kindLabel + '</div>') +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  };
+
+  openFullPage({
+    title: '讨论串',
+    sideClass: 'rel-side',
+    sidebar,
+    render,
+    afterDraw: api => { pageEl = api.el; hydrateImages(api.el); },
+    onClose: () => { if (pageEl) unobserveImages(pageEl); },
+    onEvent: (ev, api) => {
+      const kb = ev.target.closest('[data-thread-kind]');
+      if (kb) { kind = kb.dataset.threadKind; api.redraw(); return; }
+      const go = ev.target.closest('[data-thread-goto]');
+      if (go) {
+        const n = findNode(go.dataset.threadNode);
+        api.close();
+        if (n) jumpToRow(n, go.dataset.threadGoto);
+        return;
+      }
+    },
+  });
 }

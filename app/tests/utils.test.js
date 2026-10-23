@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { esc, uid, badgeColor, badgeHTML, PALETTE, countLabel } from '../utils.js';
+import { esc, uid, badgeColor, badgeHTML, PALETTE, countLabel, filterTopicsByTitle } from '../utils.js';
 
 /* ---------- esc ---------- */
 
@@ -87,4 +87,36 @@ test('countLabel：超过 999 只显示 999+', () => {
   assert.equal(countLabel(1000), '999+');
   assert.equal(countLabel(123456), '999+');
   assert.equal(countLabel(null), '0');
+});
+/* ---------- filterTopicsByTitle（导入话题选择器的搜索） ---------- */
+
+const TOPICS = [
+  { id: 0, title: '深度学习入门' },
+  { id: 1, title: 'React Hooks 笔记' },
+  { id: 2, title: '実习面试回顾' },
+  { id: 3, title: '' },
+];
+
+test('filterTopicsByTitle：空查询返回全部（且不共享数组）', () => {
+  const out = filterTopicsByTitle(TOPICS, '');
+  assert.equal(out.length, 4);
+  assert.notEqual(out, TOPICS);
+  assert.equal(filterTopicsByTitle(TOPICS, '   ').length, 4);
+});
+
+test('filterTopicsByTitle：中文子串匹配', () => {
+  assert.deepEqual(filterTopicsByTitle(TOPICS, '学习').map(x => x.id), [0]);
+  assert.deepEqual(filterTopicsByTitle(TOPICS, '面试').map(x => x.id), [2]);
+});
+
+test('filterTopicsByTitle：英文大小写不敏感', () => {
+  assert.deepEqual(filterTopicsByTitle(TOPICS, 'react').map(x => x.id), [1]);
+  assert.deepEqual(filterTopicsByTitle(TOPICS, 'HOOKS').map(x => x.id), [1]);
+  assert.deepEqual(filterTopicsByTitle(TOPICS, 'React hooks').map(x => x.id), [1]);
+});
+
+test('filterTopicsByTitle：无匹配 / 异常输入', () => {
+  assert.equal(filterTopicsByTitle(TOPICS, 'zzz').length, 0);
+  assert.equal(filterTopicsByTitle(null, 'x').length, 0);
+  assert.deepEqual(filterTopicsByTitle([{ id: 9 }], 'x'), []);
 });

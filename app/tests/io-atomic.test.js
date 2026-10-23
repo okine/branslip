@@ -300,3 +300,11 @@ test.after(() => {
      显式还原更稳妥 */
   Object.assign(Storage, orig);
 });
+test('不完整代理项：.tmp 与正式文件都用清洗后的文本（不会校验失败）', async () => {
+  const dir = makeDir();
+  const raw = 'a\uD800b';              // 孤立高代理项
+  const cleaned = 'a\uFFFDb';
+  await atomicWriteText(dir, 'x.md', raw);
+  assert.equal(dir._files.get('x.md'), cleaned, '正式文件应是清洗后的');
+  assert.equal(dir._files.has('x.md.tmp'), false, '成功后 .tmp 应被删');
+});

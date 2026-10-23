@@ -25,7 +25,6 @@
 import { $, esc, PAGING } from './utils.js';
 import { Store } from './store.js';
 import { Mutate } from './mutate.js';
-import { dayKey } from './format.js';
 import { hydrateImages, resetImgObserver } from './image.js';
 import { toast, openMenuAt } from './ui.js';
 import {
@@ -60,6 +59,7 @@ import {
   jumpToRow, 
   wireEntriesJump,
 } from './entries-jump.js';
+import { dayKey, dayKeyOfEntry } from './format.js';
 // entries.js
 const findNode = Store.node;
 /* ---------- 依赖注入 ---------- */
@@ -135,7 +135,7 @@ export function renderEntries() {
   ensureGlobalMeta()
 
   const foldCover = Mutate.buildFoldCover(n, start);
-  let h = '', lastDay = start > 0 ? dayKey(n.entries[start - 1].createdAt) : '', idx = 0;
+  let h = '', lastDay = start > 0 ? dayKeyOfEntry(n.entries[start - 1]) : '', idx = 0;
 
   for (let i = start; i < total; i++) {
     let foldInfo = null;
@@ -149,7 +149,7 @@ export function renderEntries() {
       foldInfo = { key, expanded, count, isLast: (i === cov.b) };
     }
     const e = n.entries[i];
-    const dk = dayKey(e.createdAt);
+    const dk = dayKeyOfEntry(e);
     const showDay = dk !== lastDay;
     if (showDay) lastDay = dk;
     h += entryBlockHTML(e, idx, n, showDay, foldInfo);
@@ -249,7 +249,7 @@ function renderEntriesAround(n, targetId) {
   let lastDay = start > 0 ? dayKey(n.entries[start - 1].createdAt) : '', idx = 0;
   for (let i = start; i < end; i++) {
     const e = n.entries[i];
-    const dk = dayKey(e.createdAt);
+    const dk = dayKeyOfEntry(e);
     const showDay = dk !== lastDay;
     if (showDay) lastDay = dk;
     h += entryBlockHTML(e, idx, n, showDay, null);
@@ -320,7 +320,7 @@ export function appendEntry(n, e) {
     return;
   }
   const prev = n.entries[n.entries.length - 2];
-  const showDay = !prev || dayKey(prev.createdAt) !== dayKey(e.createdAt);
+  const showDay = !prev || dayKeyOfEntry(prev) !== dayKeyOfEntry(e);
   const idx = n.entries.length - 1;
   box.insertAdjacentHTML('beforeend', entryBlockHTML(e, idx, n, showDay));
   const newRow = box.lastElementChild;

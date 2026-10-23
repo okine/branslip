@@ -20,7 +20,6 @@
 import { $, PAGING } from './utils.js';
 import { Store } from './store.js';
 import { Mutate } from './mutate.js';
-import { dayKey, fmtStamp } from './format.js';
 import { ensureGlobalMeta } from './meta-row.js';
 import { entryBlockHTML } from './entries-render.js';
 import { hydrateImages } from './image.js';
@@ -31,6 +30,7 @@ import {
 import { toast } from './ui.js';
 import { updateTopicMeta } from './io.js';
 import { enqueue } from './writer.js';
+import { dayKey, fmtStamp, dayKeyOfEntry } from './format.js';
 
 /* ---------- 依赖注入 ---------- */
 let D = { renderEntries: () => {} };
@@ -378,6 +378,90 @@ function currentViewNodeId() {
 
 /* ---------- 分页加载 ---------- */
 
+/**
+ * 单向切片加载 —— "向上加载更早" 和 "向下加载更新" 共用这一套。
+ * 两者只有三处不同：区间方向、哨兵是谁、新记录插在哨兵的哪一侧。
+ * @param {'earlier'|'later'} dir
+ * @returns {boolean} 是否真的加载了一批
+ */
+function loadSlice(n, dir) {
+  const earlier = dir === 'earlier';
+  const box = $('#entries');
+  const sc = $('#entriesScroll');
+  if (!box || !sc) return false;
+
+  const total = n.entries.length;
+  let start, end;
+  let sentinel = null;
+
+  if (earlier) {
+    sentinel = $('#loadEarlier');
+    end = Store.ui.loadedStart;
+    start = Math.max(0, end - PAGING.chunk);
+    if (end === start) return false;
+  } else {
+    sentinel = $('#loadLater');
+    start = Store.ui.loadedEnd;
+    if (start >= total) { if (sentinel) sentinel.remove(); return false; }
+    end = Math.min(total, start + PAGING.chunk);
+  }
+
+  const oldH = sc.scrollHeight;
+  const oldTop = sc.scrollTop;
+  const anchor = captureScrollAnchor(sc, box);
+  ensureGlobalMeta();
+
+  /* 跨切片第一条要不要显示"日期分隔"：拿切片外那一秒的日期做基准 */
+  let h = '';
+  let lastDay = earlier
+    ? (end < total ? dayKeyOfEntry(n.entries[end]) : '')
+    : (start > 0 ? dayKeyOfEntry(n.entries[start - 1]) : '');
+  let idx = 0;
+  for (let i = start; i < end; i++) {
+    const e = n.entries[i];
+    const dk = dayKeyOfEntry(e);
+    const showDay = dk !== lastDay;
+    if (showDay) lastDay = dk;
+    h += entryBlockHTML(e, idx, n, showDay);
+    idx++;
+  }
+
+  if (earlier) {
+    if (sentinel) {
+      /* ★ 哨兵必须永远待在列表最上面。
+         以前把新记录插在哨兵"前面"（beforebegin），每加载 40 条哨兵就下沉
+         40 行 —— 几十批后哨兵跑到内容底部，滚到顶永远碰不到它，
+         于是"加载一定条数后就再也加载不动"。
+         正确做法：先把哨兵扶回第一位，再把新记录插到它后面。 */
+      if (box.firstElementChild !== sentinel) box.insertBefore(sentinel, box.firstChild);
+      sentinel.insertAdjacentHTML('afterend', h);
+    } else {
+      box.insertAdjacentHTML('afterbegin', h);
+    }
+    Store.ui.loadedStart = start;
+    if (sentinel) {
+      if (start === 0) sentinel.remove();
+      else sentinel.textContent = '向上滚动加载更早的记录 · 还有 ' + start + ' 条';
+    }
+  } else {
+    if (sentinel) sentinel.insertAdjacentHTML('beforebegin', h);
+    else box.insertAdjacentHTML('beforeend', h);
+    Store.ui.loadedEnd = end;
+    if (sentinel) {
+      if (end === total) sentinel.remove();
+      else sentinel.textContent = '向下滚动加载更新的记录 · 还有 ' + (total - end) + ' 条';
+    }
+  }
+
+  /* 新内容插在视口上方会让位置跳，按"顶部那条记录"补偿回来 */
+  if (!restoreScrollAnchor(sc, anchor)) {
+    const newH = sc.scrollHeight;
+    sc.scrollTo({ top: oldTop + (newH - oldH), behavior: 'auto' });
+  }
+  hydrateImages(box);
+  return true;
+}
+
 export function loadEarlier(n) {
   if (!n) return;
   if (loadingEarlier) return;
@@ -390,54 +474,7 @@ export function loadEarlier(n) {
 
   loadingEarlier = true;
   try {
-    const box = $('#entries');
-    const sc = $('#entriesScroll');
-    /* 哨兵只是"插入位置 + 文案"，缺了也要能加载 ——
-       它可能因为重绘/清缓存没了，但 loadedStart 仍然是有效的分页状态。 */
-    const sentinel = $('#loadEarlier');
-    const end = Store.ui.loadedStart;
-    const start = Math.max(0, end - PAGING.chunk);
-    if (end === start) return;
-
-    const oldH = sc.scrollHeight;
-    const oldTop = sc.scrollTop;
-    const anchor = captureScrollAnchor(sc, box);
-    ensureGlobalMeta();
-
-    let h = '';
-    let lastDay = end < n.entries.length ? dayKey(n.entries[end].createdAt) : '';
-    let idx = 0;
-    for (let i = start; i < end; i++) {
-      const e = n.entries[i];
-      const dk = dayKey(e.createdAt);
-      const showDay = dk !== lastDay;
-      if (showDay) lastDay = dk;
-      h += entryBlockHTML(e, idx, n, showDay);
-      idx++;
-    }
-
-    if (sentinel) {
-      /* ★ 哨兵必须永远待在列表最上面。
-         以前把新记录插在哨兵"前面"（beforebegin），每加载 40 条
-         哨兵就往内容深处下沉 40 行 —— 加载几十批后哨兵跑到内容底部，
-         滚到顶永远碰不到它，"加载一定条数后就再也加载不动"。
-         正确做法：先把哨兵扶回第一位，再把新记录插到它后面。 */
-      if (box.firstElementChild !== sentinel) box.insertBefore(sentinel, box.firstChild);
-      sentinel.insertAdjacentHTML('afterend', h);
-    } else {
-      box.insertAdjacentHTML('afterbegin', h);
-    }
-    Store.ui.loadedStart = start;
-    if (sentinel) {
-      if (start === 0) sentinel.remove();
-      else sentinel.textContent = '向上滚动加载更早的记录 · 还有 ' + start + ' 条';
-    }
-
-    if (!restoreScrollAnchor(sc, anchor)) {
-      const newH = sc.scrollHeight;
-      sc.scrollTo({ top: oldTop + (newH - oldH), behavior: 'auto' });
-    }
-    hydrateImages(box);
+    loadSlice(n, 'earlier');
   } finally {
     loadingEarlier = false;
   }
@@ -455,37 +492,7 @@ export function loadLater(n) {
 
   loadingLater = true;
   try {
-    const box = $('#entries');
-    const sc = $('#entriesScroll');
-    const sentinel = $('#loadLater');
-    if (!sentinel) return;
-
-    const start = Store.ui.loadedEnd;
-    const total = n.entries.length;
-    if (start >= total) { sentinel.remove(); return; }
-
-    const end = Math.min(total, start + PAGING.chunk);
-    const anchor = captureScrollAnchor(sc, box);
-    ensureGlobalMeta();
-
-    let h = '';
-    let lastDay = start > 0 ? dayKey(n.entries[start - 1].createdAt) : '';
-    let idx = 0;
-    for (let i = start; i < end; i++) {
-      const e = n.entries[i];
-      const dk = dayKey(e.createdAt);
-      const showDay = dk !== lastDay;
-      if (showDay) lastDay = dk;
-      h += entryBlockHTML(e, idx, n, showDay);
-      idx++;
-    }
-
-    sentinel.insertAdjacentHTML('beforebegin', h);
-    Store.ui.loadedEnd = end;
-    if (end === total) sentinel.remove();
-    else sentinel.textContent = '向下滚动加载更新的记录 · 还有 ' + (total - end) + ' 条';
-    restoreScrollAnchor(sc, anchor);
-    hydrateImages(box);
+    loadSlice(n, 'later');
   } finally {
     loadingLater = false;
   }

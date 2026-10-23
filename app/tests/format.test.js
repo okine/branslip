@@ -11,6 +11,7 @@ import {
   /* 格式化 */
   fmtStamp, fmtStampLocal, fmtFull, fmtTime,
   dayKey, fmtDay, monthKey, monthFileName, MONTH_RE, imgStamp,stampForWrite, entryBlockId,
+  monthKeyOfEntry, dayKeyOfEntry,
 } from '../format.js';
 
 
@@ -310,4 +311,43 @@ test('stampForWrite 无 _rawStamp / _tzOffset → 用本地时区', () => {
   const e = { createdAt: Date.parse('2025-01-01T02:00:00.000Z') };
   const s = stampForWrite(e);
   assert.match(s, /^2025-01-01 \d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$/);
+});
+
+/* ============================================================
+ * 条目级时区归属（P0）：月份/日期必须跟自己的 ## 行一致
+ * ============================================================ */
+
+/* 一条在 UTC-5 写下的跨年记录 */
+const NY_NEW_YEAR = {
+  createdAt: Date.parse('2025-12-31T23:30:00.000-05:00'),
+  _writeStamp: '2025-12-31 23:30:00.000-05:00',
+  _tzOffset: -300,
+};
+
+test('月份归属：取 ## 行的字面年月，不受本机时区影响', () => {
+  assert.equal(monthKeyOfEntry(NY_NEW_YEAR), '2025-12');
+  /* 对比：按本机时区的旧算法（这台机器是 +08）会得到 2026-01 */
+  if (new Date().getTimezoneOffset() === -480) {
+    assert.equal(monthKey(NY_NEW_YEAR.createdAt), '2026-01');
+  }
+});
+
+test('日分组归属：和 dayKey 同构（月从 0 起），也按字面值', () => {
+  assert.equal(dayKeyOfEntry(NY_NEW_YEAR), '2025-11-31');
+});
+
+test('没有磁盘串时用 _tzOffset；都没有时退回本机', () => {
+  const withTz = { createdAt: NY_NEW_YEAR.createdAt, _tzOffset: -300 };
+  assert.equal(monthKeyOfEntry(withTz), '2025-12');
+  assert.equal(dayKeyOfEntry(withTz), '2025-11-31');
+
+  const plain = { createdAt: NY_NEW_YEAR.createdAt };
+  assert.equal(monthKeyOfEntry(plain), monthKey(NY_NEW_YEAR.createdAt));
+  assert.equal(dayKeyOfEntry(plain), dayKey(NY_NEW_YEAR.createdAt));
+});
+
+test('_rawStamp 也能作为时区依据', () => {
+  const e = { createdAt: NY_NEW_YEAR.createdAt, _rawStamp: '2026-01-01 12:30:00.000+08:00' };
+  assert.equal(monthKeyOfEntry(e), '2026-01');
+  assert.equal(dayKeyOfEntry(e), '2026-0-1');
 });

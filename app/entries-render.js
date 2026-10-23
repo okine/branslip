@@ -22,11 +22,10 @@
 import { esc, badgeHTML } from './utils.js';
 import { I } from './icons.js';
 import { Store } from './store.js';
-
-import { dayKey, fmtDay } from './format.js';
 import { renderMDCached, renderTextParts, parseRelevanceHeader, stripQuoteHeader, isReplyMessage, isRelatedMessage } from './md.js';
 
 import { renderMetaRow } from './meta-row.js';
+import { dayKey, fmtDay, dayKeyOfEntry } from './format.js';
 /* ---------- 模块级状态 ---------- */
 
 let dialogueEnabled = true;
@@ -122,7 +121,7 @@ export function entryHTML(e, idx, srcNode, foldInfo) {
   (isRelev ? ' relevance-entry' : '') +
   (lastAdded === e.id ? ' new' : '') +
   '" data-eid="' + e.id + '" data-node="' + nid +
-  '" data-day="' + dayKey(e.createdAt) +
+  '" data-day="' + dayKeyOfEntry(e) +
   '" style="--i:' + idx + '">' +
   '<div class="tools">' +
     '<button class="tool" data-eact="edit" aria-label="编辑" title="编辑">' + I.pen + '</button>' +
@@ -137,14 +136,15 @@ export function entryHTML(e, idx, srcNode, foldInfo) {
 }
 
 /* day-chip —— 日分组标题。entryBlockHTML / 合并视图 / 分页加载都用它。 */
-export function dayChipHTML(ts, idx) {
-  return '<div class="day-chip" data-day="' + dayKey(ts) +
+export function dayChipHTML(ts, idx, entry) {
+  /* 有条目就按条目自己的时区算日期，和它头上的 ## 行保持一致 */
+  return '<div class="day-chip" data-day="' + (entry ? dayKeyOfEntry(entry) : dayKey(ts)) +
          '" style="--i:' + idx + '">' + fmtDay(ts) + '</div>';
 }
 
 /* day-chip + 完整一行 */
 export function entryBlockHTML(e, idx, node, showDay, foldInfo) {
-  const head = showDay ? dayChipHTML(e.createdAt, idx) : '';
+  const head = showDay ? dayChipHTML(e.createdAt, idx, e) : '';
   return head + entryHTML(e, idx, node, foldInfo);
 }
 

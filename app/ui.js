@@ -127,8 +127,9 @@ export function toggleMenu(anchor) {
           'center' → x 是锚点中心；
           省略     → x 是锚点左边缘。
    ignoreEl: 这个元素上的点击不算"点外面"（就是开菜单的那个按钮）——
-             否则 pointerdown 会先把菜单关掉，click 再打开，按钮永远关不上。 */
-export function openMenuAt(x, y, items, align, ignoreEl) {
+             否则 pointerdown 会先把菜单关掉，click 再打开，按钮永远关不上。
+   above:    菜单开在 y 的上方（贴底按钮用，避免菜单盖住按钮本身）。 */
+export function openMenuAt(x, y, items, align, ignoreEl, above) {
   closeMenu();
   const m = document.createElement('div'); m.className = 'menu';
   m.innerHTML = items.map((it, i) => {
@@ -164,7 +165,8 @@ export function openMenuAt(x, y, items, align, ignoreEl) {
   else if (align === 'center') left = x - mw / 2;
   else left = x;                               // 默认左对齐
   m.style.left = Math.max(8, Math.min(left, innerWidth - mw - 8)) + 'px';
-  m.style.top  = Math.max(8, Math.min(y, innerHeight - mh - 8)) + 'px';
+  const topY = above ? y - mh : y;
+  m.style.top  = Math.max(8, Math.min(topY, innerHeight - mh - 8)) + 'px';
   m.addEventListener('click', ev => {
     const bs = ev.target.closest('[data-mis]');
     if (bs) { const it = items[+bs.dataset.mis]; closeMenu(); it.splitFn(); return; }
@@ -174,9 +176,26 @@ export function openMenuAt(x, y, items, align, ignoreEl) {
   
 }
 
-export function openMenu(anchor, items) {
+export function openMenu(anchor, items, opts) {
   const r = anchor.getBoundingClientRect();
-  openMenuAt(r.right, r.bottom + 6, items, 'right', anchor);   // ← 传真实右边缘 + 锚点
+  opts = opts || {};
+  /* side:'right' —— 贴边工具栏（桌面左侧竖排）用：菜单整体放在按钮右侧，
+     完全不遮住工具栏。 */
+  if (opts.side === 'right') {
+    openMenuAt(r.right + 8, r.top, items, null, anchor, false);
+    return;
+  }
+  const above = !!opts.above;
+  /* above：把 y 当成按钮上边缘，由 openMenuAt 往上推一个菜单高度 */
+  openMenuAt(r.right, above ? r.top : r.bottom + 6, items, 'right', anchor, above);
+}
+
+/* 菜单该往哪开：手机（窄屏）向上，桌面贴边工具栏向右 */
+export function menuPlacement() {
+  const narrow = typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(max-width: 860px)').matches;
+  return narrow ? { above: true } : { side: 'right' };
 }
 
 /* ---------- 模态 ---------- */
@@ -361,7 +380,9 @@ export function closeSide() {
 export function openFullPage(opts) {
  opts = opts || {};
  const d = document.createElement('div');
- d.className = 'pin-page';
+ /* 把 sideClass 也挂到页面上：各页可以只针对自己写布局（比如关联一览
+    在手机上要"窄侧栏 + 右侧内容"，别的页仍是上下堆叠）。 */
+ d.className = 'pin-page' + (opts.sideClass ? ' has-side-' + opts.sideClass : '');
 
  const close = makeEscapable(() => {
    if (d.parentNode) d.remove();

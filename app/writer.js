@@ -38,8 +38,8 @@
 
 import { $,esc  }     from './utils.js';
 import { Store, draftTopicIds } from './store.js';
-import { currentWindow } from './platform.js';
-import { toast, promptPermissionRecovery, openModal, closeModal } from './ui.js';
+import { currentWindow, invoke } from './platform.js';
+import { toast, promptPermissionRecovery, openModal, closeModal, confirmDialog } from './ui.js';
 import { stats } from './tree-utils.js';
 let lastStats = null;
 
@@ -315,6 +315,8 @@ export function waitForIdle(onProgress) {
  * 由 app.js 在 wire 完成后调用一次。
  */
 let _exitGuardInstalled = false;
+/* 用户已经确认"仍然关闭" → 放行 beforeunload，否则 destroy 会再被拦一次 */
+let _exiting = false;
 
 function hasUnsavedWork() {
   return draftTopicIds().length > 0 || Store.fs.pending > 0;
@@ -334,6 +336,7 @@ export function installExitGuard() {
   _exitGuardInstalled = true;
 
   window.addEventListener('beforeunload', e => {
+    if (_exiting) return;
     if (!hasUnsavedWork()) return;
     e.preventDefault();
     e.returnValue = '';
@@ -350,7 +353,16 @@ export function installExitGuard() {
         unsavedSummary() + '。\n现在关闭会丢掉这些内容。',
         { danger: true, okText: '仍然关闭', cancelText: '继续写' }
       );
-      if (ok) { try { await win.destroy(); } catch (e) {} }
+      if (!ok) return;
+      _exiting = true;
+      /* 正常路径：destroy 关窗。ACL 没给 allow-destroy 时它会 reject，
+         这时退到 Rust 的 quit_app，别让用户"点了关闭却关不掉"。 */
+      try {
+        await win.destroy();
+      } catch (e) {
+        console.warn('[exit] destroy 失败，改用 quit_app', e);
+        try { await invoke('quit_app'); } catch (e2) { console.error('[exit] quit_app 也失败', e2); }
+      }
     });
   } catch (e) { /* 非 Tauri 环境忽略 */ }
 }

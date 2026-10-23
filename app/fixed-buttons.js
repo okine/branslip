@@ -15,11 +15,11 @@
 import { Store } from './store.js';
 import { I } from './icons.js';
 import { $ } from './utils.js';
-import { toast, confirmDialog, openMenu, toggleMenu } from './ui.js';
+import { toast, confirmDialog, openMenu, toggleMenu, menuPlacement } from './ui.js';
 import { clearRuntimeCaches } from './cacheClear.js';
 import { flushAllScroll, captureTopAnchor, settleTopAnchor, renderAroundEntry } from './entries-jump.js';
 import { waitForIdle } from './writer.js';
-import { pickItPage } from './pages.js';
+import { pickItPage, openTimeArrow } from './pages.js';
 import { openMergeMenu } from './entries-merge.js';
 import { openTrashPage } from './trash.js';
 import { openTopicDetails } from './topic-info.js';
@@ -43,18 +43,18 @@ const IMPORT_ATTEMPTS = [
 let PORTS = {};
 let importPick = null;
 
+/* 导入对话：主键和「更多」菜单共用 */
+function importFlow() {
+  if (!Store.fs.ready) { toast('尚未连接文件夹'); return; }
+  importPick?.click();
+}
+
 /* 主键 —— 只改这个数组的顺序就能调整固定按钮位置 */
 const FIXED_BUTTONS = [
   { id: 'tbPickIt', icon: 'sparkles', label: '拾之', title: '随机抽几条旧记录看看', onClick: pickItPage },
-  { id: 'tbMerge',  icon: 'layers',   label: '合并', title: '时间流 / 合并多个话题', onClick: btn => openMergeMenu(btn) },
-  {
-    id: 'importBtn', icon: 'import', label: '导入', title: '导入对话（.json）',
-    onClick: () => {
-      if (!Store.fs.ready) { toast('尚未连接文件夹'); return; }
-      importPick?.click();
-    },
-  },
-  { id: 'tbMore', icon: 'info', label: '更多', title: '回收站 / 重扫 / 文件夹 / 主题 / 导出 / 清缓存', onClick: btn => openMoreMenu(btn) },
+  { id: 'tbMerge',  icon: 'layers',   label: '模式', title: '时间流 / 合并话题 / 时之箭 / 对话模式', onClick: btn => openMergeMenu(btn, { onTimeArrow: openTimeArrow }) },
+  { id: 'tbTheme',  icon: 'palette',  label: '主题', title: '主题与背景', onClick: btn => openThemePanel(btn) },
+  { id: 'tbMore', icon: 'info', label: '更多', title: '回收站 / 重扫 / 文件夹 / 导入 / 导出 / 清缓存', onClick: btn => openMoreMenu(btn) },
 ];
 
 /* 清理缓存：菜单项和「更多」共用 */
@@ -97,10 +97,10 @@ function openMoreMenu(anchor) {
     { icon: I.refresh, label: '重扫（从磁盘重新读）', fn: () => PORTS.onRescan?.() },
     { icon: I.folder,  label: '存储文件夹：' + folderName, fn: () => PORTS.onChangeFolder?.() },
     { sep: true },
-    { icon: I.palette, label: '主题与背景', fn: () => openThemePanel(anchor) },
+    { icon: I.import,  label: '导入对话（.json）', fn: importFlow },
     { icon: I.folder,  label: '导出 ZIP', fn: () => exportZipFlow(anchor) },
     { icon: I.broom,   label: '清理缓存', fn: clearCacheFlow },
-  ]);
+  ], menuPlacement());
 }
 
 export function initFixedButtons(ports) {
@@ -173,7 +173,8 @@ export function initFixedButtons(ports) {
       if (!mq.matches) return;
       const btn = e.target.closest('.tb-btn');
       if (!btn) return;
-      if (btn.id === 'tbMerge' || btn.id === 'tbMore') return;
+      /* 这三个要在抽屉里继续操作（菜单/主题面板都锚在按钮上），不收起抽屉 */
+      if (btn.id === 'tbMerge' || btn.id === 'tbMore' || btn.id === 'tbTheme') return;
       if (document.querySelector('#menuRoot .menu')) {
         e.stopPropagation();
         e.preventDefault();

@@ -19,6 +19,7 @@ import { Store }   from './store.js';
 import {
   fmtStamp, monthKey, monthFileName, MONTH_RE, parseStamp,escapeEntryBody,
   stampForWrite,
+  monthKeyOfEntry,
 } from './format.js';
 import { nextCreatedAtMs } from './format.js';
 
@@ -285,7 +286,7 @@ export async function copyAttachment(fromDir, toDir, relPath) {
 export async function writeMonthFile(node, mk, opts) {
   const allowDelete = !opts || opts.allowDelete !== false;
   const fname = monthFileName(mk);
-  const entries = node.entries.filter(e => monthKey(e.createdAt) === mk);
+  const entries = node.entries.filter(e => monthKeyOfEntry(e) === mk);
   if (!entries.length) {
     if (!allowDelete) return;
     if (node._loadErrors && node._loadErrors.has(fname)) {
@@ -309,7 +310,7 @@ export async function writeMonthFile(node, mk, opts) {
 
 export async function appendMonthEntry(node, e) {
   await ensureMonthMigrated(node);
-  const mk = monthKey(e.createdAt);
+  const mk = monthKeyOfEntry(e);
   const fname = monthFileName(mk);
 
   /* 该月第一次写 → 全量写（writeMonthFile 内部已经是 atomicWriteText） */
@@ -340,7 +341,7 @@ export async function ensureMonthMigrated(node) {
   if (!node._hasOldFile) return;
   const byMonth = {};
   for (const e of node.entries) {
-    const mk = monthKey(e.createdAt);
+    const mk = monthKeyOfEntry(e);
     (byMonth[mk] ||= []).push(e);
   }
   for (const mk of Object.keys(byMonth)) await writeMonthFile(node, mk);
@@ -357,7 +358,7 @@ export async function writeEntriesFile(node) {
   }
   const byMonth = {};
   for (const e of node.entries) {
-    const mk = monthKey(e.createdAt);
+    const mk = monthKeyOfEntry(e);
     (byMonth[mk] ||= []).push(e);
   }
   const allMks = new Set([...existing, ...Object.keys(byMonth)]);
@@ -368,9 +369,13 @@ export async function writeEntriesFile(node) {
   node._hasOldFile = false;
 }
 
-export async function persistMonthOf(node, ts) {
+export async function persistMonthOf(node, target) {
   await ensureMonthMigrated(node);
-  await writeMonthFile(node, monthKey(ts));
+  /* target 可以是条目（按条目自己的时区归属）或毫秒数 */
+  const mk = (target && typeof target === 'object' && 'createdAt' in target)
+    ? monthKeyOfEntry(target)
+    : monthKey(target);
+  await writeMonthFile(node, mk);
 }
 
 /* ---------- 顺序清单 ---------- */

@@ -17,9 +17,9 @@ import { Store } from './store.js';
 import { toast, makeEscapable, wireOutsideClose } from './ui.js';
 import { openCalendarPicker } from './calendar.js';
 import { openTimelinePanel } from './timeline.js';
-import { readTimeline } from './io.js';                                       
-import { dayKey, dayKeyNum, fmtDay } from './format.js';
+import { readTimeline } from './io.js';
 import { jumpToRow } from './entries-jump.js';
+import { dayKey, dayKeyNum, fmtDay, dayKeyOfEntry } from './format.js';
 
 let dateJumpTimer = null;
 let dateMenuClose = null;
@@ -64,7 +64,7 @@ export function openDatePicker() {
   /* 日期列表必须来自整个话题，而不是当前已渲染的 80 条 */
   const dayMap = new Map();
   for (const e of n.entries) {
-    const k = dayKey(e.createdAt);
+    const k = dayKeyOfEntry(e);
     if (!dayMap.has(k)) dayMap.set(k, fmtDay(e.createdAt));
   }
   const uniq = [...dayMap.entries()]
@@ -130,7 +130,7 @@ export function openDatePicker() {
 function jumpToDay(sc, key) {
   const n = Store.node(Store.ui.selectedId);
   if (!n) return;
-  const target = n.entries.find(e => dayKey(e.createdAt) === key);
+  const target = n.entries.find(e => dayKeyOfEntry(e) === key);
   if (target) jumpToRow(n, target.id);
   else toast('那天没有记录');
 }
@@ -138,7 +138,7 @@ function jumpToDay(sc, key) {
 async function openCustomCalendar(sc, currentDayKey) {
   const n = Store.node(Store.ui.selectedId);
   const entryDays = new Set();
-  if (n) for (const e of n.entries) entryDays.add(dayKey(e.createdAt));
+  if (n) for (const e of n.entries) entryDays.add(dayKeyOfEntry(e));
 
   /* 读已有区间（只用于显示） */
   let ranges = [];
@@ -166,13 +166,13 @@ function pickDayAndJump(sc, key) {
 
   const first = n.entries[0];
   /* 早于第一条记录 → 跳到第一条 */
-  if (dayKeyNum(key) < dayKeyNum(dayKey(first.createdAt))) {
+  if (dayKeyNum(key) < dayKeyNum(dayKeyOfEntry(first))) {
     jumpToRow(n, first.id);
     toast('已跳到最早记录');
     return;
   }
 
-  const target = n.entries.find(e => dayKey(e.createdAt) === key);
+  const target = n.entries.find(e => dayKeyOfEntry(e) === key);
   if (target) jumpToRow(n, target.id);
   else toast('那天没有记录');
 }
