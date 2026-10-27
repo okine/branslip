@@ -138,9 +138,7 @@ async function connectInner(h) {
     clearRuntimeCaches();
     resetMeta();
 
-    Store.ui.viewHistory = [];
-    Store.ui.drafts.clear();
-    Store.ui.viewCursor = -1;
+    Store.resetViewState();
     history.replaceState({ root: true }, '');
 
     Store.collapsed.clear();
@@ -174,9 +172,7 @@ async function connectInner(h) {
   clearRuntimeCaches();
   resetMeta();
 
-  Store.ui.viewHistory = [];
-  Store.ui.drafts.clear();
-  Store.ui.viewCursor = -1;
+  Store.resetViewState();
   history.replaceState({ root: true }, '');
 
   const prefs = loadPrefs();
@@ -311,6 +307,13 @@ $('#gatePick').addEventListener('click', async () => {
 });
 
 $('#gateReconnect').addEventListener('click', function () {
+  /* 桌面版记住的是路径（不是浏览器里的目录句柄） */
+  if (PLATFORM.isTauri) {
+    const dir = this._path;
+    if (!dir) return;
+    connect(dir).catch(e => toast('连接失败：' + (e.message || e)));
+    return;
+  }
   if (this._h) requestConnect(this._h);
 });
 
@@ -321,15 +324,20 @@ export async function boot() {
   installMathOverflowWatcher();
   history.replaceState({ root: true }, '');
 
-  /* ── Tauri 分支：从 localStorage 读上次路径 ── */
+  /* ── Tauri 分支：从 localStorage 读上次路径 ──
+     有记录也只显示「继续使用」按钮，不自动进入 —— 由用户决定这次用哪个文件夹。 */
   if (PLATFORM.isTauri) {
     let dir = null;
     try { dir = localStorage.getItem('shizhijian.dir'); } catch (e) {}
     if (dir) {
-      try { await connect(dir); return; }
-      catch (e) { toast('连接上次文件夹失败：' + (e.message || e)); }
+      const btn = $('#gateReconnect');
+      if (btn) {
+        btn.classList.remove('hidden');
+        btn._path = dir;
+        const name = dir.split(/[\\/]/).filter(Boolean).pop() || dir;
+        btn.innerHTML = I.folder + '<span>继续使用「' + esc(name) + '」</span>';
+      }
     }
-    /* 没有记录 / 连接失败 → 停在启动页 */
     return;
   }
 
@@ -338,14 +346,7 @@ export async function boot() {
   try { h = await idbGet('dir'); } catch (e) {}
 
   if (h && h.name) {
-    let perm = 'prompt';
-    try { perm = await h.queryPermission({ mode: 'readwrite' }); } catch (e) {}
-
-    if (perm === 'granted') {
-      try { await connect(h); return; }
-      catch (e) { toast('连接上次文件夹失败：' + (e.message || e)); }
-    }
-
+    /* 不因为浏览器已授权就直接进入：仍然停在启动页，让用户点「继续使用」。 */
     const btn = $('#gateReconnect');
     btn.classList.remove('hidden');
     btn._h = h;

@@ -60,6 +60,7 @@ export async function scanDir(dir, name) {
   node.source   = null;
   node.sourceId = null;
   node.intro    = '';
+  node.owner    = null;
   node.scroll   = null;
   try {
     const raw = await Storage.readText(dir, '_话题.json');
@@ -68,6 +69,8 @@ export async function scanDir(dir, name) {
     node.source   = meta.source   || null;    // ★
     node.sourceId = meta.sourceId || null;    // ★
     node.intro    = typeof meta.intro === 'string' ? meta.intro : '';
+    /* 主视角：选一个发送者当作“我”（社交导入用） */
+    node.owner    = typeof meta.owner === 'string' && meta.owner ? meta.owner : null;
     /* 简介的创建时间 / 最后更新时间（都在 _话题.json 里） */
     node.introCreatedAt = typeof meta.introCreatedAt === 'string' ? meta.introCreatedAt : null;
     node.introAt  = typeof meta.introAt === 'string' ? meta.introAt : null;
@@ -197,19 +200,12 @@ export async function rescanFromDisk() {
       console.warn('[rescan] 重写顺序失败', e);
     }
 
-    Store.ui.viewHistory = [];
-    Store.ui.drafts.clear();
-    Store.ui.viewCursor = -1;
+    Store.resetViewState();
     history.replaceState({ root: true }, '');
 
     Store.collapsed.clear();
     collapseAll();
 
-    Store.ui.editingEntry = null;
-    Store.ui.creatingParent = null;
-    Store.ui.renaming = null;
-
-    Store.ui.selectedId = null;
     PORTS.renderAll?.();
     const t = selPath ? findByPath(selPath) : null;
     if (t) PORTS.select?.(t.id);

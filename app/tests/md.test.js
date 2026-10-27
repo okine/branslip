@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { parseEntries, splitByImage, renderMD,
+import { parseEntries, splitByImage, renderMD, parseSenderPrefix, listSenders,
   renderTextParts, hasImage, stripImages,
   isReplyMessage, topicRefId, normalizeTopicRefId, } from '../md.js';
 import { stampForWrite, entryBlockId } from '../format.js';
@@ -300,4 +300,42 @@ test('写盘头 stampForWrite → parseEntries → entryBlockId 稳定', () => {
   assert.ok(p);
   assert.equal(entryBlockId(p), '2025-01-01_10-00-00-000');
   assert.equal(entryBlockId(p), entryBlockId(e));
+});
+/* ---------- 发送者前缀（主视角） ---------- */
+
+test('parseSenderPrefix：解析 **名字** 并返回剩余正文', () => {
+  const sp = parseSenderPrefix('**明识 圆**\n你好\n\n第二行');
+  assert.equal(sp.name, '明识 圆');
+  assert.equal(sp.body, '你好\n\n第二行');
+});
+
+test('parseSenderPrefix：没有前缀返回 null', () => {
+  assert.equal(parseSenderPrefix('普通正文'), null);
+  assert.equal(parseSenderPrefix(''), null);
+});
+
+test('parseSenderPrefix：名字里的转义字符能还原', () => {
+  const sp = parseSenderPrefix('**A\\*B\\[x\\]**\nhi');
+  assert.equal(sp.name, 'A*B[x]');
+  assert.equal(sp.body, 'hi');
+});
+
+test('listSenders：按出现次数排序', () => {
+  const list = listSenders([
+    { text: '**A**\n1' }, { text: '**B**\n2' }, { text: '**A**\n3' }, { text: '无前缀' },
+  ]);
+  assert.deepEqual(list, [{ name: 'A', count: 2 }, { name: 'B', count: 1 }]);
+});
+
+test('parseSenderPrefix：引用头之后的发送者前缀也能识别', () => {
+  const sp = parseSenderPrefix('> 原文\n> [[~t#^b1]]\n\n**A**\nhi');
+  assert.equal(sp.name, 'A');
+  assert.match(sp.body, /^> 原文/);
+  assert.match(sp.body, /hi$/);
+});
+
+test('renderMD：:::sticker 渲染成贴纸块', () => {
+  const h = renderMD(':::sticker 💖:::');
+  assert.match(h, /class="tg-sticker"/);
+  assert.match(h, /💖/);
 });

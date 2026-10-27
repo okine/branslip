@@ -105,6 +105,12 @@ export function preprocess(src, opts) {
     });
   }
 
+  /* ── :::sticker 贴纸占位（导出没有文件时的兜底） ── */
+  if (t.includes(':::sticker')) {
+    t = t.replace(/:::sticker[ \t]*([^\n:]*?)[ \t]*:::/g, (m, emo) =>
+      put('<span class="tg-sticker" title="贴纸">' + esc(emo || '贴纸') + '</span>'));
+  }
+
   /* ── blockquote 段落分隔 ── */
   if (t.includes('>')) {
     t = t.replace(/(^>.*(?:\n>.*)*)\n(?=[^>\n])/gm, '$1\n\n');

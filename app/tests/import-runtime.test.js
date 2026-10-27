@@ -183,7 +183,7 @@ test('extractFromTree: 单条 user 消息', () => {
   assert.equal(topic.entries.length, 1);
   assert.equal(topic.entries[0].text, '你好');
   assert.equal(topic.entries[0].createdAt, 1000);
-  assert.equal(topic.createdAtMs, 1000);
+  assert.equal(topic.createdAtMs, 999, '话题时间 = 首条记录 - 1ms');
 });
 
 test('extractFromTree: user + assistant', () => {
@@ -361,7 +361,7 @@ test('extractFromTree: sourceCreatedAt NaN → 用首条 at', () => {
     title: 'T', sourceCreatedAt: NaN,
     extractContent: () => ({ role: 'user', text: 'x', thinking: '' }),
   });
-  assert.equal(topic.createdAtMs, 5000);
+  assert.equal(topic.createdAtMs, 4999, '话题时间 = 首条记录 - 1ms');
 });
 
 test('extractFromTree: 不同 topic 的 scopeId 不同', () => {
@@ -387,6 +387,7 @@ test('extractFromTree: 分叉 → 主分支最深，其余成子话题', () => {
     makeMessage('c', 3000, { parentId: 'b', raw: { role: 'user', text: '主2' } }),
     makeMessage('d', 4000, { parentId: 'c', raw: { role: 'assistant', text: '主3' } }),
     makeMessage('e', 2500, { parentId: 'a', raw: { role: 'assistant', text: '侧' } }),
+  makeMessage('f', 2600, { parentId: 'e', raw: { role: 'user', text: '侧后续' } }),
   ]);
   const topic = extractFromTree(tree, {
     title: 'T', sourceCreatedAt: NaN, extractContent: echoExtract,
@@ -394,7 +395,7 @@ test('extractFromTree: 分叉 → 主分支最深，其余成子话题', () => {
   assert.equal(topic.entries.length, 4);
   assert.deepEqual(topic.entries.map(e => e.text), ['根', '主1', '主2', '主3']);
   assert.equal(topic.branches.length, 1);
-  assert.equal(topic.branches[0].entries.length, 1);
+  assert.equal(topic.branches[0].entries.length, 2);
   assert.equal(topic.branches[0].entries[0].text, '侧');
 });
 
@@ -402,13 +403,15 @@ test('extractFromTree: 分叉 → 子话题标题 [分支] + 首条预览', () =
   const tree = buildMessageTree([
     makeMessage('a', 1000, { raw: { role: 'user', text: '根' } }),
     makeMessage('b', 2500, { parentId: 'a', raw: { role: 'assistant', text: '被选为主分支' } }),
+    makeMessage('b2', 2600, { parentId: 'b', raw: { role: 'user', text: '主后续' } }),
     makeMessage('c', 2000, { parentId: 'a', raw: { role: 'assistant', text: '侧分支首条' } }),
+    makeMessage('c2', 2050, { parentId: 'c', raw: { role: 'user', text: '侧后续' } }),
   ]);
   const topic = extractFromTree(tree, {
     title: 'T', sourceCreatedAt: NaN, extractContent: echoExtract,
   });
   /* 同深 → 时间最新的 b 作主，c 作子话题 */
-  assert.equal(topic.entries.length, 2);
+  assert.equal(topic.entries.length, 3);
   assert.equal(topic.entries[1].text, '被选为主分支');
   assert.equal(topic.branches.length, 1);
   assert.equal(topic.branches[0].title, '[分支] 侧分支首条');
@@ -418,7 +421,9 @@ test('extractFromTree: 同深分支 → 时间最新的作主分支', () => {
   const tree = buildMessageTree([
     makeMessage('a', 1000, { raw: { role: 'user', text: '根' } }),
     makeMessage('b', 2500, { parentId: 'a', raw: { role: 'assistant', text: 'B' } }),
+    makeMessage('b2', 2600, { parentId: 'b', raw: { role: 'user', text: 'B后续' } }),
     makeMessage('c', 2000, { parentId: 'a', raw: { role: 'assistant', text: 'C' } }),
+    makeMessage('c2', 2050, { parentId: 'c', raw: { role: 'user', text: 'C后续' } }),
   ]);
   const topic = extractFromTree(tree, {
     title: 'T', sourceCreatedAt: NaN, extractContent: echoExtract,
@@ -431,7 +436,9 @@ test('extractFromTree: 子话题的 _fromUser 指向分支点用户消息', () =
   const tree = buildMessageTree([
     makeMessage('a', 1000, { raw: { role: 'user', text: '根' } }),
     makeMessage('b', 2500, { parentId: 'a', raw: { role: 'assistant', text: 'B' } }),
+    makeMessage('b2', 2600, { parentId: 'b', raw: { role: 'user', text: 'B后续' } }),
     makeMessage('c', 2000, { parentId: 'a', raw: { role: 'assistant', text: 'C' } }),
+    makeMessage('c2', 2050, { parentId: 'c', raw: { role: 'user', text: 'C后续' } }),
   ]);
   const topic = extractFromTree(tree, {
     title: 'T', sourceCreatedAt: NaN, extractContent: echoExtract,
@@ -642,11 +649,82 @@ test('导入：没有时间戳的消息用对话时间兜底，不用 Date.now()
     title: 'x', sourceCreatedAt: SRC,
     extractContent: () => ({ role: 'user', text: 'hi' }),
   });
-  assert.equal(root.createdAtMs, SRC);
+  assert.equal(root.createdAtMs, root.entries[0].createdAt - 1);
   assert.equal(root.entries.length, 2);
   for (const e of root.entries) {
     const d = Math.abs(e.createdAt - SRC);
     assert.ok(d < 10, '时间应落在对话的 2025 年，而不是今天：' + e.createdAt);
   }
   assert.ok(root.entries[0].createdAt < root.entries[1].createdAt, '仍然保持顺序');
+});
+
+/* ============================================================
+ * 变体（叶子再生成）规则
+ * ============================================================ */
+
+test('extractFromTree: 叶子再生成 → 变体，不建子话题', () => {
+  const tree = buildMessageTree([
+    makeMessage('a', 1000, { raw: { role: 'user', text: '问题' } }),
+    makeMessage('b', 2500, { parentId: 'a', raw: { role: 'assistant', text: '主回答' } }),
+    makeMessage('c', 2000, { parentId: 'a', raw: { role: 'assistant', text: '另一版' } }),
+  ]);
+  const topic = extractFromTree(tree, {
+    title: 'T', sourceCreatedAt: NaN, extractContent: echoExtract,
+  });
+  assert.equal(topic.branches.length, 0, '叶子再生成不该建子话题');
+  assert.equal(topic.entries.length, 3);
+  assert.equal(topic.entries[1].text, '主回答');
+  assert.equal(topic.entries[2].text, '另一版');
+  assert.equal(topic.entries[2]._altOf, topic.entries[1], '变体挂在主回答上');
+  assert.equal(topic.entries[2]._scope, topic.entries[1]._scope, '和主回答同一个话题');
+});
+
+test('extractFromTree: 改了提问的分支（首条是 user）仍是子话题', () => {
+  const tree = buildMessageTree([
+    makeMessage('a', 1000, { raw: { role: 'user', text: '问题' } }),
+    makeMessage('b', 2500, { parentId: 'a', raw: { role: 'assistant', text: '主回答' } }),
+    makeMessage('c', 2000, { parentId: 'a', raw: { role: 'user', text: '改过的提问' } }),
+  ]);
+  const topic = extractFromTree(tree, {
+    title: 'T', sourceCreatedAt: NaN, extractContent: echoExtract,
+  });
+  assert.equal(topic.branches.length, 1);
+  assert.equal(topic.branches[0].entries[0].text, '改过的提问');
+  assert.equal(topic.entries.length, 2);
+});
+
+test('话题时间：原始创建时间更早 → 用原始时间', () => {
+  const tree = buildMessageTree([makeMessage('a', 5000, { raw: {} })]);
+  const topic = extractFromTree(tree, {
+    title: 'T', sourceCreatedAt: 3000,
+    extractContent: () => ({ role: 'user', text: 'x', thinking: '' }),
+  });
+  assert.equal(topic.createdAtMs, 3000, '原时间更早，保留原时间');
+  assert.equal(topic.entries[0].createdAt, 5000);
+});
+
+test('话题时间：原始时间与首条同一毫秒 → 让开 1ms', () => {
+  const tree = buildMessageTree([makeMessage('a', 5000, { raw: {} })]);
+  const topic = extractFromTree(tree, {
+    title: 'T', sourceCreatedAt: 5000,
+    extractContent: () => ({ role: 'user', text: 'x', thinking: '' }),
+  });
+  assert.equal(topic.createdAtMs, 4999, '和首条撞毫秒时仍让开 1ms');
+});
+
+test('话题时间：分支子话题没有原时间 → 首条 - 1ms', () => {
+  const tree = buildMessageTree([
+    makeMessage('a', 1000, { raw: { role: 'user', text: '根' } }),
+    makeMessage('b', 2000, { parentId: 'a', raw: { role: 'assistant', text: '主' } }),
+    makeMessage('b2', 2100, { parentId: 'b', raw: { role: 'user', text: '继续' } }),
+    makeMessage('c', 1500, { parentId: 'a', raw: { role: 'assistant', text: '侧' } }),
+    makeMessage('c2', 1600, { parentId: 'c', raw: { role: 'user', text: '侧继续' } }),
+  ]);
+  const topic = extractFromTree(tree, {
+    title: 'T', sourceCreatedAt: 500,
+    extractContent: echoExtract,
+  });
+  assert.equal(topic.createdAtMs, 500, '主话题用原时间');
+  assert.equal(topic.branches.length, 1);
+  assert.equal(topic.branches[0].createdAtMs, topic.branches[0].entries[0].createdAt - 1);
 });

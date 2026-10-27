@@ -21,7 +21,7 @@ import { $, PAGING } from './utils.js';
 import { Store } from './store.js';
 import { Mutate } from './mutate.js';
 import { ensureGlobalMeta } from './meta-row.js';
-import { entryBlockHTML } from './entries-render.js';
+import { entryBlockHTML, altRowHTML, dayChipHTML, buildAltGroups, altAnchorOf } from './entries-render.js';
 import { hydrateImages } from './image.js';
 import {
   scrollIntoViewIn, scrollToBottom, flashEl,
@@ -417,13 +417,28 @@ function loadSlice(n, dir) {
     ? (end < total ? dayKeyOfEntry(n.entries[end]) : '')
     : (start > 0 ? dayKeyOfEntry(n.entries[start - 1]) : '');
   let idx = 0;
+
+  /* 切片里也要认变体：锚点在切片内 → 合并成翻页行；
+     锚点在切片外（已经渲染过）→ 若它的翻页行已在 DOM，这一版已经收在翻页里，
+     不再单独成行（否则同一内容会出现两次）。 */
+  const { altOf, isAlt } = buildAltGroups(n, start, end);
   for (let i = start; i < end; i++) {
     const e = n.entries[i];
+    if (isAlt.has(e.id)) continue;
+    const anchor = altAnchorOf(e, n);
+    if (anchor && box.querySelector('.alt-row[data-alt-anchor="' + anchor.id + '"]')) continue;
     const dk = dayKeyOfEntry(e);
     const showDay = dk !== lastDay;
     if (showDay) lastDay = dk;
-    h += entryBlockHTML(e, idx, n, showDay);
-    idx++;
+    const variants = altOf.get(e.id);
+    if (variants) {
+      if (showDay) h += dayChipHTML(e.createdAt, idx, e);
+      h += altRowHTML(e, variants, idx, n, Store.ui.altIndex.get(e.id) || 0);
+      idx++;
+    } else {
+      h += entryBlockHTML(e, idx, n, showDay);
+      idx++;
+    }
   }
 
   if (earlier) {
@@ -618,6 +633,8 @@ export function jumpToRow(node, targetId) {
         && currentViewNodeId() === node.id
         && typeof D.showAround === 'function') {
       D.showAround(node, targetId);
+      /* 目标是"变体"时，窗口里它是被收起的，激活那一版 */
+      setTimeout(() => { try { D.activateAlt?.(targetId); } catch (e) {} }, 0);
       return;
     }
 

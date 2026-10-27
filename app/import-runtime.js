@@ -264,8 +264,25 @@ export function extractFromTree(tree, opts) {
   rescueInferredTimes(tree, baseMs);
   walkSubtree(tree, null, root, extractContent, tzOffset);
   normalizeAll(root);
+  syncTopicTimes(root, Number.isFinite(sourceCreatedAt) && sourceCreatedAt > 0 ? sourceCreatedAt : 0);
   freezeWriteStamps(root);
   return root;
+}
+
+/* 话题时间：
+   - 有原始创建时间（对话的 created_at）且确实早于首条记录 → 用原时间；
+   - 没有原始时间，或原时间不早于首条（比如和首条同一毫秒）→ 首条 - 1ms。
+   后一种情况必须让开 1ms：话题和记录的时间戳都参与 ID/排序，撞毫秒会互相顶。 */
+function syncTopicTimes(t, sourceMs) {
+  if (!t) return;
+  if (t.entries.length) {
+    const first = t.entries[0].createdAt;
+    t.createdAtMs = (sourceMs > 0 && sourceMs < first)
+      ? sourceMs
+      : Math.max(1, first - 1);
+  }
+  /* 分支子话题没有独立的"创建时间"信息 → 一律首条 - 1ms */
+  for (const br of t.branches) syncTopicTimes(br, 0);
 }
 
 /**
@@ -307,12 +324,25 @@ function findMinAt(node) {
 let scopeCounter = 0;
 function nextScopeId() { return ++scopeCounter; }
 
+/* extractContent 的结果按节点缓存：排序（peekTransientChild）和 walkSubtree 都要用，
+   以前同一个节点会被解析两次。WeakMap 不阻止节点被回收。 */
+const _contentCache = new WeakMap();
+function contentItemsOf(node, extractContent) {
+  if (!node || !node.message) return [];
+  const cached = _contentCache.get(node);
+  if (cached) return cached;
+  let c = null;
+  try { c = extractContent(node.message); } catch (e) { c = null; }
+  const items = Array.isArray(c) ? c : (c ? [c] : []);
+  _contentCache.set(node, items);
+  return items;
+}
+
 function walkSubtree(node, parentUser, ctx, extractContent, defaultTz) {
   let myUser = parentUser;
 
   if (node.message && node.at) {
-    const c = extractContent(node.message);
-    const items = Array.isArray(c) ? c : (c ? [c] : []);
+    const items = contentItemsOf(node, extractContent);
 
     for (const item of items) {
       if (!item || item.role === 'skip') continue;
@@ -369,13 +399,26 @@ function walkSubtree(node, parentUser, ctx, extractContent, defaultTz) {
 
   if (!node.children.length) return;
 
-  /* 主分支 = 最深子树，其次时间最新 */
+  /* 主分支 = 有真实内容的优先，其次最深子树，其次时间最新。
+     失败重试（"服务器繁忙"）不能当主回答 —— 否则打开先看到失败，
+     真正的答案藏在翻页里。 */
+  const transientOf = new Map(
+    node.children.map(c => [c, peekTransientChild(c, extractContent) ? 1 : 0])
+  );
   const children = [...node.children].sort((a, b) => {
+    const ta = transientOf.get(a) || 0;
+    const tb = transientOf.get(b) || 0;
+    if (ta !== tb) return ta - tb;
     if (a._depth !== b._depth) return b._depth - a._depth;
     return b.at - a.at;
   });
 
+  const beforeMain = ctx.entries.length;
   walkSubtree(children[0], myUser, ctx, extractContent, defaultTz);
+
+  /* 主路径走完后先记住"主回答"这条 —— 后面用它当变体的锚点 */
+  const anchorReply = findAnchorReply(ctx, myUser, beforeMain);
+  let altInserted = 0;
 
   for (let i = 1; i < children.length; i++) {
     const subCtx = {
@@ -390,14 +433,37 @@ function walkSubtree(node, parentUser, ctx, extractContent, defaultTz) {
     if (!subCtx.entries.length) continue;
     subCtx.createdAtMs = subCtx.entries[0].createdAt;
     subCtx.title = branchTitle(subCtx);
-    /* 重试留下的"服务器繁忙"之类分支不建子话题：信息量为零，
-       却会在树里堆出 "<<分支> 服务器繁忙，请稍后再试。 2/3/4/5"。 */
-    if (isTransientFailureBranch(subCtx)) {
-      ctx._skippedTransient = (ctx._skippedTransient || 0) + 1;
+    /* ★ 叶子再生成（只有一条 assistant、没有后续）→ 收进主回答的"变体"，
+         不再建子话题。有后续的分支仍然保留为子话题。 */
+    if (isLeafRegeneration(subCtx) && anchorReply) {
+      const v = subCtx.entries[0];
+      v._scope = ctx.scopeId;      /* 和主回答同一个话题 */
+      v._altOf = anchorReply;
+      const at = ctx.entries.indexOf(anchorReply);
+      ctx.entries.splice(at + 1 + altInserted, 0, v);
+      altInserted++;
       continue;
     }
+
     ctx.branches.push(subCtx);
   }
+}
+
+/* 主回答：主路径上"回复当前用户消息"的那条 assistant entry */
+function findAnchorReply(ctx, myUser, fromIdx) {
+  for (let i = fromIdx; i < ctx.entries.length; i++) {
+    const e = ctx.entries[i];
+    if (e && e._replyTo && e._replyTo === myUser) return e;
+  }
+  return null;
+}
+
+/* 叶子再生成：只有一条 entry（assistant）、没有子分支 */
+function isLeafRegeneration(subCtx) {
+  if (!subCtx) return false;
+  if (subCtx.branches && subCtx.branches.length) return false;
+  if (!subCtx.entries || subCtx.entries.length !== 1) return false;
+  return !!subCtx.entries[0]._replyTo;
 }
 
 /* ============================================================
@@ -484,6 +550,18 @@ const TRANSIENT_FAILURE_RE = new RegExp([
 ].join('|'));
 
 /** 只有"单条、短、且是固定失败话术"的分支才认为没有价值。 */
+/* 排序用：这个叶子 child 是不是一条"失败重试"消息。
+   只看"没有子节点 + 只有一条 assistant 文本"的情况（和 isTransientFailureBranch 同义）。 */
+function peekTransientChild(node, extractContent) {
+  if (!node || !node.message) return false;
+  if (node.children && node.children.length) return false;
+  const items = contentItemsOf(node, extractContent).filter(Boolean);
+  if (items.length !== 1) return false;
+  const it = items[0];
+  if (!it || it.role !== 'assistant' || it.thinking) return false;
+  return isTransientFailureBranch({ entries: [{ text: it.text || '' }], branches: [] });
+}
+
 export function isTransientFailureBranch(branch) {
   if (!branch || !branch.entries || branch.entries.length !== 1) return false;
   if (branch.branches && branch.branches.length) return false;
@@ -507,12 +585,27 @@ function processReplyHeaders(topic, topicIdMap, parentInfo) {
     let header = '';
 
     if (i === 0 && parentInfo && !e._replyTo) {
-      header = '> 📌 此分支从「' + parentInfo.parentTitle + '」分出\n' +
+      /* 分支首条是 user：如果它和父话题里那条用户消息**不一样**，
+         说明这是"改了提问"产生的新分支，标出来更直观。 */
+      const parentText = String(parentInfo.parentText || '').trim();
+      const curText = String(e.text || '').trim();
+      const edited = parentText && curText && parentText !== curText;
+      header = '> 📌 此分支从「' + parentInfo.parentTitle + '」分出' +
+               (edited ? '（原消息修改后，出现新分支）' : '') + '\n' +
                '> [[~' + parentInfo.parentTopicId + '#^' +
                parentInfo.parentBlockId + ']]\n\n';
     }
 
-    if (e._replyTo) {
+    if (e._altOf) {
+      /* 变体头：↻ [[~tid#^锚点]] —— 不写回复头，也不建子话题 */
+      const tgt = e._altOf;
+      const tid = topicIdMap.get(tgt._scope);
+      if (tid) {
+        header = '↻ [[~' + tid + '#^' + entryBlockId(tgt) + ']]\n\n';
+      }
+      delete e._altOf;
+      delete e._replyTo;
+    } else if (e._replyTo) {
       const tgt = e._replyTo;
       const tid = topicIdMap.get(tgt._scope);
       if (tid) {
@@ -535,6 +628,7 @@ function processReplyHeaders(topic, topicIdMap, parentInfo) {
         parentTitle: topic.title,
         parentTopicId: fromTopicId,
         parentBlockId: entryBlockId(fromUser),
+        parentText: fromUser.text,      /* 用来判断分支是不是"改了提问"产生的 */
       };
     }
     processReplyHeaders(br, topicIdMap, parentInfo);
@@ -555,14 +649,17 @@ async function writeTopic(parentDir, topic, source, opts, onImage) {
 
   /* ★ 新增：图片复制逻辑 */
   if (opts && opts.photoDir) {
-    const IMG_RE = /!\[[^\]]*\]\(attachments\/([^)]+)\)/g;
+    /* alt 以 sticker: 开头的是贴纸，走下面的 _copy 计划（源文件在 stickers/），
+       这里不能按普通照片去根目录/photos 找，否则会刷一堆"复制失败"。 */
+    const IMG_RE = /!\[([^\]]*)\]\(attachments\/([^)]+)\)/g;
     const attachmentsDir = await Storage.getDir(dir, 'attachments', { create: true });
 
     for (const e of topic.entries) {
       let match;
       IMG_RE.lastIndex = 0;
       while ((match = IMG_RE.exec(e.text))) {
-        const fname = match[1];
+        if (String(match[1] || '').startsWith('sticker:')) continue;
+        const fname = match[2];
         try {
           let srcFh;
           try { srcFh = await resolveFile(opts.photoDir, fname); }
@@ -574,6 +671,36 @@ async function writeTopic(parentDir, topic, source, opts, onImage) {
         } finally {
           if (onImage) onImage();   /* ★ 成功或失败都推进 */
         }
+      }
+    }
+
+    /* 贴纸等"按计划复制"的附件：解析阶段已登记 source → target，
+       同一目标只复制一次（同一张贴纸发很多次时不会重复写盘）。 */
+    const copiedTargets = new Set();
+    for (const e of topic.entries) {
+      for (const c of (e._copy || [])) {
+        if (!c || !c.source || !c.target) continue;
+        if (copiedTargets.has(c.target)) continue;
+        copiedTargets.add(c.target);
+        /* 先按导出根目录的相对路径找；找不到再退回 basename
+           （用户直接把 stickers 目录选进来时也能命中）。 */
+        const base = String(c.source).split('/').pop();
+        const candidates = (base && base !== c.source) ? [c.source, base] : [c.source];
+        let lastErr = null;
+        for (const rel of candidates) {
+          try {
+            const srcFh = await resolveFile(opts.photoDir, rel);
+            const blob = await srcFh.getFile();
+            await Storage.writeBlob(attachmentsDir, c.target, blob);
+            lastErr = null;
+            break;
+          } catch (err) { lastErr = err; }
+        }
+        if (lastErr) {
+          console.warn('[import] 贴纸复制失败', c.source, lastErr,
+            '（若选的是 photos 子目录，请改选导出根目录）');
+        }
+        if (onImage) onImage();
       }
     }
   }
@@ -641,8 +768,27 @@ function countImages(topic) {
  * @param {string} source        'deepseek' | 'claude' | 'qwen' | 'gemini' | 'telegram' | ...
  * @param {Function} [report]    (done, total) => void，进度回调
  */
+/* 话题引用 ID 来自 createdAtMs；不同对话的首条记录可能落在同一毫秒，
+   导入前统一压到互不相同的毫秒上，避免 "~2026-…" 引用撞车。 */
+function uniquifyTopicTimes(topic, used) {
+  if (!topic) return;
+  if (topic.entries.length) {
+    let ms = topic.createdAtMs;
+    while (used.has(ms) && ms > 1) ms -= 1;
+    used.add(ms);
+    topic.createdAtMs = ms;
+  }
+  for (const br of topic.branches) uniquifyTopicTimes(br, used);
+}
+
 export async function importAsTopics(parentDir, conversations, source, report, opts) {
   const roots = [];
+
+  /* 先把所有话题时间定下来（含分支），再写文件 */
+  {
+    const used = new Set();
+    for (const conv of conversations) uniquifyTopicTimes(conv.root, used);
+  }
   const totalConvs = conversations.length;
 
   let totalImages = 0;
@@ -724,6 +870,14 @@ export function finalizeFlatTopic(entries, opts) {
     branches: [],
   };
   normalizeTimestamps(topic);
+  if (topic.entries.length) {
+    const first = topic.entries[0].createdAt;
+    const srcMs = (Number.isFinite(opts.sourceCreatedAt) && opts.sourceCreatedAt > 0)
+      ? opts.sourceCreatedAt : 0;
+    topic.createdAtMs = (srcMs > 0 && srcMs < first)
+      ? srcMs
+      : Math.max(1, first - 1);
+  }
   freezeWriteStamps(topic);
   return topic;
 }
@@ -800,9 +954,9 @@ async function showImportConfirmDialog(source, count, ui) {
       `<h3>确认导入</h3>
        <p class="sub">检测到 <b>${sourceName}</b> 导出格式。<br>包含 <b>${count}</b> 个话题。</p>
        <div style="margin:14px 0; padding:12px; background:var(--paper); border-radius:8px;">
-         <p style="font-size:12.5px; margin-bottom:8px; color:var(--ink2);">如果导出包含图片，请选择对应的文件夹以便一并导入：</p>
+         <p style="font-size:12.5px; margin-bottom:8px; color:var(--ink2);">如果导出包含图片/贴纸，请选择导出根目录（里面有 photos、stickers 的那一层）：</p>
          <div style="display:flex; align-items:center; gap:10px;">
-           <button type="button" class="m-btn ghost" id="pickPhotoBtn" style="padding:6px 12px; font-size:12px; flex:none;">选择图片文件夹</button>
+           <button type="button" class="m-btn ghost" id="pickPhotoBtn" style="padding:6px 12px; font-size:12px; flex:none;">选择导出目录</button>
            <span id="photoStatus" style="font-size:12px; color:var(--ink3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">未选择（仅保留文字与路径）</span>
          </div>
        </div>

@@ -24,12 +24,17 @@
 
 import { $, esc, PAGING } from './utils.js';
 import { Store } from './store.js';
+import { parseSenderPrefix } from './md.js';
 import { Mutate } from './mutate.js';
 import { hydrateImages, resetImgObserver } from './image.js';
 import { toast, openMenuAt } from './ui.js';
 import {
    entryInnerHTML, entryBlockHTML, 
    setLastAdded, clearLastAdded,
+  altRowHTML,
+  buildAltGroups,
+  setAltVersion,
+  dayChipHTML,
 } from './entries-render.js';
 import { scrollIntoViewIn, scrollToBottom, flashEl } from './scroll-utils.js';
 import {
@@ -91,6 +96,28 @@ const findEntry = Store.entry;
 
 
 
+/** 变体行当前显示第几版（记住选择，重绘后不跳回第一版） */
+function altIndexFor(eid) {
+  const m = Store.ui.altIndex;
+  return (m && m.get(eid)) || 0;
+}
+
+/* 切页逻辑统一在 entries-render.setAltVersion（只保留一份实现） */
+
+/** 让某个变体成为当前显示的那一版（跳到它时用）。返回是否找到。 */
+export function activateAltEntry(eid) {
+  if (!eid) return false;
+  const body = document.querySelector('#entries [data-alt-eid="' + eid + '"]');
+  if (!body) return false;
+  const row = body.closest('.alt-row');
+  const bodies = [...row.querySelectorAll('[data-alt-body]')];
+  setAltVersion(row, bodies.indexOf(body));
+  const sc = $('#entriesScroll');
+  if (sc) scrollIntoViewIn(sc, row, { align: 'center' });
+  flashEl(row);
+  return true;
+}
+
 export function renderEntries() {
   setDirectWindow(false);
   clearEarlierObs();
@@ -135,9 +162,13 @@ export function renderEntries() {
   ensureGlobalMeta()
 
   const foldCover = Mutate.buildFoldCover(n, start);
+  /* 变体分组：锚点必须在窗口内，否则变体按普通记录渲染（见 buildAltGroups） */
+  const { altOf, isAlt } = buildAltGroups(n, start, total);
+
   let h = '', lastDay = start > 0 ? dayKeyOfEntry(n.entries[start - 1]) : '', idx = 0;
 
   for (let i = start; i < total; i++) {
+    const e = n.entries[i];
     let foldInfo = null;
     const cov = foldCover.get(i);
     if (cov && cov.fold) {
@@ -145,15 +176,30 @@ export function renderEntries() {
       const key = Mutate.foldKey(f.from, f.to);
       const expanded = Store.ui.expandedFolds.has(key);
       const count = cov.b - cov.a + 1;
-      if (!expanded) { if (i !== cov.b) continue; }
+      if (!expanded) {
+        if (i !== cov.b) {
+          /* 锚点被折叠藏起来：它的变体若落在折叠区间外，要放出来单独成行，
+             否则 isAlt 会把它一起跳过 —— 两条都不显示。 */
+          const vs = altOf.get(e.id);
+          if (vs) for (const v of vs) isAlt.delete(v.id);
+          continue;
+        }
+      }
       foldInfo = { key, expanded, count, isLast: (i === cov.b) };
     }
-    const e = n.entries[i];
+    if (isAlt.has(e.id)) continue;                    /* 变体跟着锚点行渲染 */
     const dk = dayKeyOfEntry(e);
     const showDay = dk !== lastDay;
     if (showDay) lastDay = dk;
-    h += entryBlockHTML(e, idx, n, showDay, foldInfo);
-    idx++;
+    const variants = altOf.get(e.id);
+    if (variants) {
+      if (showDay) h += dayChipHTML(e.createdAt, idx, e);
+      h += altRowHTML(e, variants, idx, n, altIndexFor(e.id));
+      idx++;
+    } else {
+      h += entryBlockHTML(e, idx, n, showDay, foldInfo);
+      idx++;
+    }
   }
 
   if (start > 0) {
@@ -245,15 +291,25 @@ function renderEntriesAround(n, targetId) {
   clearEarlierObs();
   clearLaterObs();
 
+  const { altOf: altOfW, isAlt: isAltW } = buildAltGroups(n, start, end);
+
   let h = '';
-  let lastDay = start > 0 ? dayKey(n.entries[start - 1].createdAt) : '', idx = 0;
+  let lastDay = start > 0 ? dayKeyOfEntry(n.entries[start - 1]) : '', idx = 0;
   for (let i = start; i < end; i++) {
     const e = n.entries[i];
+    if (isAltW.has(e.id)) continue;
     const dk = dayKeyOfEntry(e);
     const showDay = dk !== lastDay;
     if (showDay) lastDay = dk;
-    h += entryBlockHTML(e, idx, n, showDay, null);
-    idx++;
+    const vars = altOfW.get(e.id);
+    if (vars) {
+      if (showDay) h += dayChipHTML(e.createdAt, idx, e);
+      h += altRowHTML(e, vars, idx, n, altIndexFor(e.id));
+      idx++;
+    } else {
+      h += entryBlockHTML(e, idx, n, showDay, null);
+      idx++;
+    }
   }
 
   let head = '';
@@ -276,19 +332,26 @@ function renderEntriesAround(n, targetId) {
   updateScrollBtn();
 
   requestAnimationFrame(() => {
-    const el = box.querySelector('[data-eid="' + targetId + '"]');
-    if (!el) return;
-    scrollIntoViewIn($('#entriesScroll'), el, {
-      align: 'top',
-      offset: 20,
-      smooth: false,
-    });
-    flashEl(el);
+    let el = box.querySelector('[data-eid="' + targetId + '"]');
+    /* 目标是变体：行上的 data-eid 是当前版本，先切到那一版再定位 */
+    if (!el && activateAltEntry(targetId)) {
+      const body = box.querySelector('[data-alt-eid="' + targetId + '"]');
+      el = body ? body.closest('.alt-row') : null;
+    }
+    if (el) {
+      scrollIntoViewIn($('#entriesScroll'), el, {
+        align: 'top',
+        offset: 20,
+        smooth: false,
+      });
+      flashEl(el);
+    }
 
     /* ★ 先定位，再挂分页哨兵。
        否则目标窗口的顶部哨兵一开始就在视口里，IntersectionObserver
        会立刻 loadEarlier，插入旧记录后再纠正滚动 —— 看起来就是
-       “定位后突然往下跳”。 */
+       “定位后突然往下跳”。
+       ★ 哨兵挂载不能依赖 el：变体/找不到行时也要能继续分页。 */
     if (document.getElementById('loadEarlier')) armLoadEarlier(n);
     if (document.getElementById('loadLater')) armLoadLater(n);
   });
@@ -361,11 +424,21 @@ function replaceRow(eid, n) {
   if (!hit || hit.node !== n) return false;
   const ent = hit.e;
 
-  const oldEntry = row.querySelector(':scope > .entry');
+  /* 变体行：只替换"当前这一版"的 .entry —— 行结构、翻页条、其它版本全部保留，
+     否则 replaceRow 会返回 false，触发整窗重绘（编辑时视口会跳）。 */
+  const altBody = row.classList.contains('alt-row')
+    ? row.querySelector('[data-alt-body][data-alt-eid="' + eid + '"]')
+    : null;
+  const oldEntry = altBody
+    ? altBody.querySelector(':scope > .alt-line > .entry')
+    : row.querySelector(':scope > .entry');
   if (!oldEntry) return false;
 
   const tmp = document.createElement('div');
-  tmp.innerHTML = entryInnerHTML(ent, n);
+  /* 主视角“我”的消息要隐藏发送者前缀，局部替换时也要保持一致 */
+  const owner = n && n.owner;
+  const sp = owner ? parseSenderPrefix(ent.text) : null;
+  tmp.innerHTML = entryInnerHTML(ent, n, { stripSender: !!(sp && sp.name === owner) });
   const newEntry = tmp.firstElementChild;
 
   /* 就地替换，外层 .entry-row / .tools / .fold-ctrl / data-* 全部保留 */
@@ -458,4 +531,4 @@ wireOps({
   renderAll: (...a) => D.renderAll(...a),  // 转发 app 注入
   select: (...a) => D.select(...a),
 });
-wireEntriesJump({ renderEntries, showAround: renderEntriesAround });
+wireEntriesJump({ renderEntries, showAround: renderEntriesAround, activateAlt: activateAltEntry });

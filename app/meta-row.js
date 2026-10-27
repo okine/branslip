@@ -24,7 +24,7 @@ import { esc, $ } from './utils.js';
 import { I } from './icons.js';
 import { Store } from './store.js';
 import { Mutate } from './mutate.js';
-import { fmtTime, fmtFull } from './format.js';
+import { fmtTime, fmtFull, entryBlockId } from './format.js';
 import { walk } from './tree-utils.js';
 
 /* ---------- 正则 ---------- */
@@ -69,22 +69,31 @@ export function getMetaCounts() {
  * 扫一段 entry 文本，返回它引用的所有 blockId，按类别分。
  * 同一条 entry 里重复引用同一个 blockId，只算一次。
  *
- * @returns {{ reply: string[], relevance: string[], mirror: string[] }}
+ * @returns {{ reply: string[], relevance: string[], mirror: string[], alt: string[] }}
  */
 export function scanEntryRefs(text) {
-  const out = { reply: [], relevance: [], mirror: [] };
+  const out = { reply: [], relevance: [], mirror: [], alt: [] };
   if (!text) return out;
 
-  const relMatch = text.match(RE_REL);
+  /* 变体头：↻ [[~tid#^bid]] —— 单独一类，不能算进"回复"计数。
+     用全局正则把任意行首的 ↻ 头整行摘掉（容忍前导空格），
+     否则一旦头不在第 0 个字符，就会被 RE_REF 当成回复引用。 */
+  const ALT_LINE = /^[ \t]*↻\s*\[\[([^\]]+)#\^([^\]]+)\]\][^\n]*$/gm;
+  let scan = text.replace(ALT_LINE, (m, tid, bid) => {
+    out.alt.push(bid);
+    return '';
+  });
+
+  const relMatch = scan.match(RE_REL);
   if (relMatch) out.relevance.push(relMatch[1]);
 
   /* 剥掉关联头那一行，剩下的扫普通引用 */
-  const scan = relMatch ? text.replace(RE_REL, '') : text;
+  const scan2 = relMatch ? scan.replace(RE_REL, '') : scan;
 
   const seen = new Set();
   RE_REF.lastIndex = 0;
   let m;
-  while ((m = RE_REF.exec(scan))) {
+  while ((m = RE_REF.exec(scan2))) {
     const kind = m[1] === '!' ? 'mirror' : 'reply';
     const bid = m[2];
     const key = kind + '\u0000' + bid;
@@ -106,9 +115,25 @@ export function renderMetaRow(e, node) {
   const rlcSet = meta.relevance.get(bid);
   const mcSet  = meta.mirror.get(bid);
 
-  const rc  = rcSet  ? { count: rcSet.size,  first: rcSet.values().next().value }  : null;
-  const rlc = rlcSet ? { count: rlcSet.size, first: rlcSet.values().next().value } : null;
-  const mc  = mcSet  ? { count: mcSet.size,  first: mcSet.values().next().value }  : null;
+  /* 同一个 blockId 只算一次：导入产生的"同毫秒双胞胎"不会再让计数翻倍，
+     点击跳转也总是落到第一条真实存在的那条上。 */
+  const uniqRefs = (set) => {
+    if (!set) return null;
+    const byBid = new Map();
+    for (const eid of set) {
+      const h = Store.entry(eid);
+      if (!h) continue;
+      const key = entryBlockId(h.e);
+      if (!byBid.has(key)) byBid.set(key, eid);
+    }
+    if (!byBid.size) return null;
+    const first = byBid.values().next().value;
+    return { count: byBid.size, first };
+  };
+
+  const rc  = uniqRefs(rcSet);
+  const rlc = uniqRefs(rlcSet);
+  const mc  = uniqRefs(mcSet);
 
   const metaParts = [fmtTime(e.createdAt)];
   let metaTitle = '';
@@ -139,7 +164,12 @@ export function renderMetaRow(e, node) {
 
 export function replaceMetaRow(row, e, n) {
   if (!row) return false;
-  const old = row.querySelector(':scope > .entry > .meta-row');
+  /* 变体行：定位到这一版自己的 body，否则 :scope > .entry 找不到（永远是第一版） */
+  const scope = row.classList.contains('alt-row')
+    ? row.querySelector('[data-alt-body][data-alt-eid="' + e.id + '"]')
+    : row;
+  if (!scope) return false;
+  const old = scope.querySelector('.entry > .meta-row');
   if (!old) return false;
   const tmp = document.createElement('div');
   tmp.innerHTML = renderMetaRow(e, n);
@@ -263,9 +293,20 @@ export function refreshAllRowMeta() {
   const box = $('#entries');
   if (!box) return;
   for (const row of box.querySelectorAll('.entry-row[data-eid]')) {
+    forEachRowEntry(row, (hit) => replaceMetaRow(row, hit.e, hit.node));
+  }
+}
+
+/* 遍历一行里的所有 entry：普通行是 active 那条，变体行是每个版本 */
+function forEachRowEntry(row, fn) {
+  if (row.classList.contains('alt-row')) {
+    for (const b of row.querySelectorAll('[data-alt-body]')) {
+      const hit = Store.entry(b.dataset.altEid);
+      if (hit) fn(hit);
+    }
+  } else {
     const hit = Store.entry(row.dataset.eid);
-    if (!hit) continue;
-    replaceMetaRow(row, hit.e, hit.node);
+    if (hit) fn(hit);
   }
 }
 
@@ -280,9 +321,9 @@ export function refreshMetaForRefs(e) {
   const bids = new Set([...refs.reply, ...refs.relevance, ...refs.mirror]);
   if (!bids.size) return;
   for (const row of box.querySelectorAll('.entry-row[data-eid]')) {
-    const hit = Store.entry(row.dataset.eid);
-    if (!hit) continue;
-    if (!bids.has(Mutate.entryBlockId(hit.e))) continue;
-    replaceMetaRow(row, hit.e, hit.node);
+    forEachRowEntry(row, (hit) => {
+      if (!bids.has(Mutate.entryBlockId(hit.e))) return;
+      replaceMetaRow(row, hit.e, hit.node);
+    });
   }
 }

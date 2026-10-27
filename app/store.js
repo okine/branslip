@@ -44,6 +44,7 @@ const _state = {
     multiSelect:     new Set(),
     lastMultiClick:  null,
     expandedFolds:   new Set(),
+  altIndex:        new Map(),  /* 变体锚点 eid → 当前显示第几版（纯内存视图状态） */
     pinCursor:       null,
     drafts:          new Map(),  /* topicId → 未发送的草稿文本 */
   },
@@ -204,6 +205,24 @@ function removeEntry(node, id) {
   return r;
 }
 
+/* 视图状态复位（换目录 / 重扫 / 断连时用）：
+   drafts / altIndex / 视图历史 / 多选 / 编辑态 / 选中项 —— 全部是"本次会话"的
+   临时状态，不落盘，也不属于缓存。之前这些散在 boot 两处 + loader 一处，漏过 altIndex。 */
+function resetViewState() {
+  const u = _state.ui;
+  u.viewHistory = [];
+  u.viewCursor = -1;
+  u.drafts.clear();
+  u.altIndex.clear();
+  u.multiSelect.clear();
+  u.editingEntry = null;
+  u.renaming = null;
+  u.creatingParent = null;
+  u.selectedId = null;
+  u.flashEntry = null;
+  u.pinCursor = null;
+}
+
 /* ---- 导出 ---- */
 export const Store = {
   // 只读状态
@@ -219,6 +238,7 @@ export const Store = {
   get fs()        { return _state.fs; },
 
   // 查询
+  resetViewState,
   node, parent, entry, blockEntry,
   topicByRefId,
   setScrollMemo, getScrollMemo,

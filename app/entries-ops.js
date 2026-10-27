@@ -36,6 +36,7 @@ import { jumpToRow } from './entries-jump.js';
 import { toast, confirmDialog,pushEsc, promptInput, openFullPage } from './ui.js';
 import { openMovePicker } from './ui-topicPicker.js';
 import { ensureGlobalMeta, getMetaCounts } from './meta-row.js';
+import { renderEntryBody, setAltVersion } from './entries-render.js';
 import { diffGlobalMetaFor, removeGlobalMetaFor, addGlobalMetaFor,refreshAllRowMeta,
   scanEntryRefs } from './meta-row.js';
 
@@ -610,7 +611,55 @@ export function buildEntryMenuItems(hit, opts) {
 }
 
 /* #entries 的点击路由：徽章跳转 / 折叠 / 多选 / 图片灯箱 / 工具按钮 */
+
+/* 跳到某条记录的**唯一入口**：
+   - 已渲染 → 定位 + 闪烁
+   - 别的话题 → 切过去，交给 flashEntry 定位（变体会展开对应版本）
+   - 同话题未渲染 → jumpToRow（around 窗口 + 变体激活都在里面） */
+export function jumpToEntry(id) {
+  if (!id) return;
+  const row = document.querySelector('#entries .entry-row[data-eid="' + id + '"]');
+  if (row) {
+    scrollIntoViewIn($('#entriesScroll'), row, { align: 'center' });
+    flashEl(row);
+    return;
+  }
+  const hit = Store.entry(id);
+  if (!hit) { toast('找不到那条记录'); return; }
+  if (hit.node && hit.node.id !== Store.ui.selectedId) {
+    Store.ui.flashEntry = id;
+    D.select(hit.node.id, { noScrollRestore: true });
+    return;
+  }
+  const cur = findNode(Store.ui.selectedId);
+  if (cur) jumpToRow(cur, id);
+}
+
 export function handleEntriesClick(e) {
+  /* 变体翻页：只切显示，不改数据；行上的 data-eid 跟着换成当前版本 */
+  const altNav = e.target.closest('[data-alt-nav]');
+  if (altNav) {
+    e.preventDefault();
+    const row = altNav.closest('.alt-row');
+    if (!row) return;
+    const bodies = [...row.querySelectorAll('[data-alt-body]')];
+    if (!bodies.length) return;
+    let cur = Number(row.dataset.altI || 0);
+    cur = (cur + Number(altNav.dataset.altNav || 0) + bodies.length) % bodies.length;
+    row.dataset.altI = String(cur);
+    row.dataset.eid = bodies[cur].dataset.altEid || row.dataset.eid;
+    bodies.forEach((b, i) => { b.hidden = (i !== cur); });
+    const pos = row.querySelector('.alt-pos b');
+    if (pos) pos.textContent = String(cur + 1);
+    const t = row.querySelector('.alt-time');
+    if (t) t.textContent = bodies[cur].dataset.altTime || '';
+    const anchor = row.dataset.altAnchor;
+    if (anchor) {
+    Store.ui.altIndex.set(anchor, cur);
+    }
+    return;
+  }
+
   if (Store.ui.multiSelect.size) {
     const mrow = e.target.closest('.entry-row');
     const isMultiClick = mrow
@@ -623,54 +672,13 @@ export function handleEntriesClick(e) {
   }
 
   const badge = e.target.closest('.reply-badge');
-  if (badge) {
-    const sc = $('#entriesScroll');
-    const target = document.querySelector('#entries .entry-row[data-eid="' + badge.dataset.replyTo + '"]');
-    if (target) {
-      scrollIntoViewIn(sc, target, { align: 'center' });
-      flashEl(target);
-    } else {
-      const cur = findNode(Store.ui.selectedId);
-      if (cur) jumpToRow(cur, badge.dataset.replyTo);
-    }
-    return;
-  }
+  if (badge) { jumpToEntry(badge.dataset.replyTo); return; }
 
   const relBadge = e.target.closest('.relevance-badge');
-  if (relBadge) {
-    const sc = $('#entriesScroll');
-    const target = document.querySelector('#entries .entry-row[data-eid="' + relBadge.dataset.relevTo + '"]');
-    if (target) {
-      scrollIntoViewIn(sc, target, { align: 'center' });
-      flashEl(target);
-    } else {
-      const cur = findNode(Store.ui.selectedId);
-      if (cur) jumpToRow(cur, relBadge.dataset.relevTo);
-    }
-    return;
-  }
+  if (relBadge) { jumpToEntry(relBadge.dataset.relevTo); return; }
 
   const mirrorBadge = e.target.closest('.mirror-badge');
-  if (mirrorBadge) {
-    const targetId = mirrorBadge.dataset.mirrorOf;
-    const sc = $('#entriesScroll');
-    const target = document.querySelector('#entries .entry-row[data-eid="' + targetId + '"]');
-    if (target) {
-      scrollIntoViewIn(sc, target, { align: 'center' });
-      flashEl(target);
-      return;
-    }
-
-    const hit = findEntry(targetId);
-    if (!hit) { toast('找不到那条记录'); return; }
-    if (hit.node.id !== Store.ui.selectedId) {
-      Store.ui.flashEntry = targetId;
-      D.select(hit.node.id, { noScrollRestore: true });
-    } else {
-      jumpToRow(hit.node, targetId);
-    }
-    return;
-  }
+  if (mirrorBadge) { jumpToEntry(mirrorBadge.dataset.mirrorOf); return; }
 
   const tog = e.target.closest('.fold-toggle');
   if (tog) {
@@ -728,6 +736,21 @@ export function handleEntriesClick(e) {
   else if (act === 'moveEntry') moveEntryTo(ent, n);
   else if (act === 'pin') D.toggleEntryPin(n, ent);
 }
+/* 正文是否真的超长：复制一份、去掉 <details class="md-think"> 再量高度。
+   思考块自己就能折叠，不该把外层也顶到折叠。 */
+function hasOverflowIgnoringThink(el) {
+  if (!el) return false;
+  if (el.scrollHeight <= el.clientHeight + 2) return false;
+  const clone = el.cloneNode(true);
+  for (const t of clone.querySelectorAll('.md-think')) t.remove();
+  clone.style.cssText = 'position:absolute;left:-99999px;top:0;visibility:hidden;' +
+    'max-height:none;overflow:visible;width:' + el.clientWidth + 'px;';
+  document.body.appendChild(clone);
+  const need = clone.scrollHeight > el.clientHeight + 2;
+  clone.remove();
+  return need;
+}
+
 /* ============================================================
  * 讨论串：在一条消息上打开（整页壳复用拾之）
  * ============================================================
@@ -757,10 +780,17 @@ export function openThreadPage(entryId) {
     const arr = [];
     if (set) for (const eid of set) {
       const h = Store.entry(eid);
-      if (h) arr.push({ e: h.e, n: h.node });
+      if (h && h.e !== self) arr.push({ e: h.e, n: h.node });
     }
     arr.sort((a, b) => a.e.createdAt - b.e.createdAt);
-    lists[k.key] = arr;
+    /* 同 blockId 只保留一次：导入撞同一毫秒时会出现"看起来一模一样"的两条 */
+    const seen = new Set();
+    lists[k.key] = arr.filter(({ e }) => {
+      const b = entryBlockId(e);
+      if (seen.has(b)) return false;
+      seen.add(b);
+      return true;
+    });
   }
 
   let kind = 'reply';
@@ -774,17 +804,21 @@ export function openThreadPage(entryId) {
     '</button>'
   ).join('');
 
-  const render = () => {
-    const rows = lists[kind].map(({ e, n }) => {
-      const preview = stripQuoteHeader(e.text).replace(/\s+/g, ' ').trim().slice(0, 80);
-      return '<button type="button" class="rel-item" data-thread-goto="' + e.id +
-        '" data-thread-node="' + n.id + '">' +
-        '<span class="rel-preview">' + esc(preview || '（无正文）') + '</span>' +
-        '<span class="rel-src">' + esc(n.title) + '</span>' +
-      '</button>';
-    }).join('');
+  const threadItem = (e, n) => {
+    const { html } = renderEntryBody({ text: stripQuoteHeader(e.text) });
+    return '<div class="thread-item">' +
+      '<div class="thread-head">' +
+        '<span class="thread-where">' + esc(n.title) + ' · ' + esc(fmtStamp(e.createdAt)) + '</span>' +
+        '<button type="button" class="thread-open" data-thread-goto="' + e.id +
+          '" data-thread-node="' + n.id + '">打开</button>' +
+      '</div>' +
+      '<div class="thread-body" data-thread-body>' + html + '</div>' +
+    '</div>';
+  };
 
-    const selfPreview = stripQuoteHeader(self.text).replace(/\s+/g, ' ').trim().slice(0, 160);
+  const render = () => {
+    const rows = lists[kind].map(({ e, n }) => threadItem(e, n)).join('');
+
     const kindLabel = (KINDS.find(k => k.key === kind) || KINDS[0]).label;
 
     return '<div class="rel-page">' +
@@ -793,7 +827,9 @@ export function openThreadPage(entryId) {
           '<span class="rel-tag">这条消息</span>' +
           '<span class="rel-count">' + esc(selfNode.title) + ' · ' + esc(fmtStamp(self.createdAt)) + '</span>' +
         '</div>' +
-        '<div class="thread-self">' + esc(selfPreview || '（无正文）') + '</div>' +
+        '<div class="thread-body" data-thread-body>' +
+          renderEntryBody({ text: stripQuoteHeader(self.text) }).html +
+        '</div>' +
       '</div>' +
       '<div class="rel-group">' +
         '<div class="rel-group-head">' +
@@ -812,16 +848,47 @@ export function openThreadPage(entryId) {
     sideClass: 'rel-side',
     sidebar,
     render,
-    afterDraw: api => { pageEl = api.el; hydrateImages(api.el); },
+    afterDraw: api => {
+      pageEl = api.el;
+      hydrateImages(api.el);
+      /* 高度对齐引用块的折叠阈值（6em）：真的超出才显示"点击展开" */
+      for (const b of api.el.querySelectorAll('[data-thread-body]')) {
+        b.classList.remove('expanded');
+        b.classList.toggle('collapsible', hasOverflowIgnoringThink(b));
+      }
+    },
     onClose: () => { if (pageEl) unobserveImages(pageEl); },
     onEvent: (ev, api) => {
       const kb = ev.target.closest('[data-thread-kind]');
       if (kb) { kind = kb.dataset.threadKind; api.redraw(); return; }
+      const body = ev.target.closest('[data-thread-body].collapsible');
+      if (body) { body.classList.toggle('expanded'); return; }
       const go = ev.target.closest('[data-thread-goto]');
       if (go) {
-        const n = findNode(go.dataset.threadNode);
+        const eid = go.dataset.threadGoto;
+        const hit = Store.entry(eid);
+        const n = hit ? findNode(hit.node.id) : null;
+        if (!hit || !n) { toast('找不到那条记录'); return; }   /* 留在讨论串 */
+
+        /* 跨话题：先切过去，等目标真的出现在 DOM 里再离开讨论串 */
+        if (n.id !== Store.ui.selectedId) {
+          Store.ui.flashEntry = eid;
+          D.select(n.id, { noScrollRestore: true });
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            const el = document.querySelector(
+              '#entries [data-eid="' + eid + '"], #entries [data-alt-eid="' + eid + '"]'
+            );
+            if (!el) { toast('找不到那条记录'); return; }       /* 留在讨论串 */
+            api.close();
+            el.scrollIntoView?.({ block: 'center' });
+            el.classList.add('flash');
+            setTimeout(() => el.classList.remove('flash'), 1700);
+          }));
+          return;
+        }
+
         api.close();
-        if (n) jumpToRow(n, go.dataset.threadGoto);
+        jumpToRow(n, eid);
         return;
       }
     },

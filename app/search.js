@@ -148,6 +148,13 @@ function tagsOf(text) {
   return out;
 }
 
+/* 搜索结果只显示"这条记录所在的话题"（也就是路径里离记录最近的那段）；
+   完整路径放进 title 提示，悬停可见。 */
+function parentPath(doc) {
+  const n = doc && doc.node;
+  return n ? (n.title || '') : '';
+}
+
 function buildDocs() {
   const nodes = [];
   const entries = [];
@@ -166,6 +173,9 @@ function buildDocs() {
         const text = e.text || '';
         entries.push({
           e, node: n, doc,
+          /* 结果行要显示"话题路径"：这里直接复用节点那条 path 字符串（同一引用，
+             不额外占内存）。少了它搜索结果里就会显示 undefined。 */
+          path,
           /* 不再各存一份 text / textLower：
              text 直接用 e.text（同一个字符串引用），小写版本按需算并进 LRU，
              省掉"每条记录额外一份小写副本"的常驻内存。 */
@@ -391,7 +401,9 @@ function renderResults() {
         '<span style="color:var(--ink3);flex:none">' + I.pen + '</span>' +
         '<span class="main"><span class="txt">' +
           snippetText((r.doc.e && r.doc.e.text) || '', q) + '</span>' +
-        '<span class="path">' + esc(r.doc.path) + ' · ' + fmtDay(r.doc.e.createdAt) + '</span>' +
+        '<span class="path" title="' + esc(r.doc.path || '') + '">' +
+          esc(parentPath(r.doc) || r.doc.node.title) +
+          ' · ' + fmtDay(r.doc.e.createdAt) + '</span>' +
         '</span></button>';
     }
     if (totalEntries > shownEntries.length) {

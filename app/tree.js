@@ -30,7 +30,7 @@ import { I } from './icons.js';
 import { Store } from './store.js';
 import { invoke, PLATFORM } from './platform.js';
 import {
- deleteOrphanAttachments
+ deleteOrphanAttachments, updateTopicMeta
 } from './io.js';
 import { clearPendingForNode } from './image.js';
 import { enqueue } from './writer.js';
@@ -39,8 +39,9 @@ import {
   toast, openMenu, openMenuAt,
   closeSide, hasModal, confirmDialog
 } from './ui.js';
-import { openMovePicker } from './ui-topicPicker.js';
+import { openMovePicker, openTopicPicker } from './ui-topicPicker.js';
 import { clearSearch } from './search.js';
+import { listSenders } from './md.js';
 import {
   findNode, findParent,  pOf, isDesc, subtreeIds,
 } from './tree-utils.js';
@@ -200,10 +201,43 @@ async function openTopicFolder(n) {
   }
 }
 
+/* 主视角：选一个成员当作"我"（社交导入的多发送者话题） */
+function openOwnerPicker(n) {
+  const senders = listSenders(n.entries);
+  if (!senders.length) { toast('这个话题里没有可选的发送者'); return; }
+
+  const items = [{ id: '__none__', title: '不使用主视角', subtitle: '恢复正常显示' }]
+    .concat(senders.map(s => ({ id: s.name, title: s.name, subtitle: s.count + ' 条' })));
+
+  openTopicPicker({
+    mode: 'single',
+    title: '主视角',
+    hint: '选一个成员当作「我」：他的消息右对齐，其他人的消息左对齐。',
+    search: true,
+    searchPlaceholder: '搜索成员名…',
+    items,
+    onPick: id => {
+      const owner = id === '__none__' ? null : id;
+      n.owner = owner;
+      enqueue(async () => {
+        try { await updateTopicMeta(n, { owner }); }
+        catch (e) { toast('保存主视角失败：' + (e.message || e)); }
+      });
+      D.renderAll();
+      if (owner) toast('主视角：' + owner);
+    },
+  });
+}
+
 function buildTopicMenuItems(n) {
   return [
     { icon: I.plus, label: '新建子话题', fn: () => startCreate(n.id) },
     { icon: I.pen, label: '重命名', fn: () => { Store.ui.renaming = n.id; renderTree(); } },
+    ...((n.source === 'telegram' || n.source === 'qq') && listSenders(n.entries).length ? [{
+      icon: I.user,
+      label: n.owner ? '主视角：' + n.owner : '设置主视角…',
+      fn: () => openOwnerPicker(n),
+    }] : []),
     {
       icon: I.move, label: '移动到…',
       fn: () => openMovePicker(

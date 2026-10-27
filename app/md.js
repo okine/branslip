@@ -69,6 +69,15 @@ marked.use({
     },
   },
 });
+/* 解析"变体"头：`↻ [[~tid#^bid]]` —— 这一条是锚点那条的另一个版本。
+   格式和回复头一致，只是把 `> 引用` 换成 `↻ 锚点`。 */
+export function parseAltHeader(text) {
+  if (!text) return null;
+  const m = String(text).match(/^[ \t]*↻\s*\[\[([^\]]+)#\^([^\]]+)\]\](?:[^\n]*\n)?/);
+  if (!m) return null;
+  return { topicRef: m[1], blockId: m[2] };
+}
+
 /* 判断一条消息是否是"关联"：第一行是引用预览，第二行是 ∝ 头标签 */
 export function isRelatedMessage(text) {
   return !!parseRelevanceHeader(text);
@@ -106,6 +115,33 @@ export function listRelevanceTitles() {
   }
   return [...set].sort((a, b) => a.localeCompare(b, 'zh'));
 }
+/* 社交导入（Telegram / QQ）在正文开头用 `**名字**` 标记发送者。
+   返回 { name, body }；没有前缀返回 null。 */
+export function parseSenderPrefix(text) {
+  if (!text) return null;
+  const s = String(text);
+  /* 回复消息的引用头在最前面，发送者前缀在它后面（写盘时 header 是 prepend 的） */
+  const rest = stripQuoteHeader(s);
+  const head = s.slice(0, s.length - rest.length);
+  const m = rest.match(/^\*\*((?:\\.|[^*\\])+)\*\*[ \t]*\r?\n?/);
+  if (!m) return null;
+  const name = m[1].replace(/\\([\\`*_[\]()])/g, '$1');
+  return { name, body: head + rest.slice(m[0].length) };
+}
+
+/* 一个话题里出现过的发送者（按出现次数降序） */
+export function listSenders(entries) {
+  const map = new Map();
+  for (const e of (entries || [])) {
+    const sp = parseSenderPrefix(e && e.text);
+    if (!sp || !sp.name) continue;
+    map.set(sp.name, (map.get(sp.name) || 0) + 1);
+  }
+  return [...map.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'zh'));
+}
+
 /* 剥掉回复/关联的引用头，返回正文。
    回复头：' > xxx\n> [[ref]]\n\n'
    关联头：' > xxx\n∝ keyword [[ref]]\n\n'
@@ -115,6 +151,9 @@ export function listRelevanceTitles() {
     let m = text.match(/^>[^\n]*\r?\n>[^\n]*\[\[[^\]]*#\^[^\]]+\]\]\r?\n+[\s]*/);
     if (m) return text.slice(m[0].length);
     m = text.match(/^>[^\n]*\r?\n∝[^\n]*\[\[[^\]]*#\^[^\]]+\]\]\r?\n+[\s]*/);
+    if (m) return text.slice(m[0].length);
+    /* 变体头：↻ [[~tid#^bid]] 单独一行 */
+    m = text.match(/^↻\s*\[\[[^\]]*#\^[^\]]+\]\][^\n]*\r?\n+[\s]*/);
     if (m) return text.slice(m[0].length);
     return text;
   }

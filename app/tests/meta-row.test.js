@@ -96,13 +96,13 @@ test('scanEntryRefs：旧路径引用也能被识别', () => {
 });
 
 test('scanEntryRefs：空文本 / null → 三个空数组', () => {
-  assert.deepEqual(scanEntryRefs(''),   { reply: [], relevance: [], mirror: [] });
-  assert.deepEqual(scanEntryRefs(null), { reply: [], relevance: [], mirror: [] });
+  assert.deepEqual(scanEntryRefs(''),   { reply: [], relevance: [], mirror: [], alt: [] });
+  assert.deepEqual(scanEntryRefs(null), { reply: [], relevance: [], mirror: [], alt: [] });
 });
 
 test('scanEntryRefs：不含任何引用 → 三个空数组', () => {
   const r = scanEntryRefs('普通文本，没有引用');
-  assert.deepEqual(r, { reply: [], relevance: [], mirror: [] });
+  assert.deepEqual(r, { reply: [], relevance: [], mirror: [], alt: [] });
 });
 
 /* ============================================================
@@ -360,3 +360,20 @@ test('★ 增删改混合：增量维护后与全量重建完全一致', () => {
 });
 
 function e1Of(A) { return A.entries.find(e => e.id === 'e1'); }
+test('scanEntryRefs：↻ 变体头归入 alt，不算 reply', () => {
+  const r = scanEntryRefs('↻ [[~2026-09-17_09-00-00-000#^abc123]]\n\n正文');
+  assert.deepEqual(r.alt, ['abc123']);
+  assert.deepEqual(r.reply, [], '变体不是回复');
+});
+
+test('scanEntryRefs：↻ 头带前导空格也算 alt，绝不算 reply', () => {
+  const r = scanEntryRefs('  ↻ [[~2026-09-17_09-00-00-000#^b1]]\n\n正文');
+  assert.deepEqual(r.alt, ['b1']);
+  assert.deepEqual(r.reply, [], '变体不能被当成回复计数');
+});
+
+test('scanEntryRefs：变体头出现在中间行也只摘掉那一行', () => {
+  const r = scanEntryRefs('第一行\n↻ [[~t#^b2]]\n正文里有 [[~t#^b3]]');
+  assert.deepEqual(r.alt, ['b2']);
+  assert.deepEqual(r.reply, ['b3'], '正文里的引用仍然是回复');
+});

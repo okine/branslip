@@ -241,7 +241,7 @@ mark{background:#E8D98F;color:inherit;border-radius:2px;padding:0 1px}
 .pin-bar::-webkit-scrollbar{display:none}
 
 .pin-chip{
-  display:flex;align-items:center;gap:01px;
+  display:flex;align-items:center;gap:1px;
   flex:1 1 0;min-width:0;
   height:38px;                      /* 固定高，不再 min-height */
   background:var(--white);
@@ -1797,4 +1797,123 @@ body.has-bg .pin-chip{background:rgba(255,253,248,.92)}
   font-size:13px;line-height:1.6;color:var(--ink2);
   padding:8px 10px;border-radius:8px;background:var(--paper);
   border:1px solid var(--line-soft);word-break:break-word;
+}
+
+/* ─── 26 变体翻页（AI 再生成的另一个版本） ───────────────────
+   一行 = 一条消息；N 个版本共用这一行，只显示当前版本，其余 hidden。
+   结构：.entry-row > .tools + .alt-col > (.alt-body ×N + .alt-bar)
+   横向对齐必须和普通消息一致：回复靠左、用户消息靠右。 */
+.alt-row{position:relative;align-items:flex-start}
+.alt-col{
+  display:flex;flex-direction:column;gap:2px;
+  flex:1 1 auto;min-width:0;
+  align-items:flex-start;              /* 默认靠左 = 回复的排布 */
+}
+
+/* 回复类：工具按钮排到右边（和普通回复行同一条规则），气泡靠左 */
+.entry-row.reply-entry.alt-row .tools{order:1}
+.entry-row.reply-entry.alt-row .alt-col{align-items:flex-start}
+.entry-row.reply-entry.alt-row .alt-bar{align-self:flex-start}
+
+/* 用户消息：整体靠右 */
+.entry-row.alt-row:not(.reply-entry) .alt-col{align-items:flex-end}
+.entry-row.alt-row:not(.reply-entry) .alt-body .entry{margin-left:auto}
+.entry-row.alt-row:not(.reply-entry) .alt-bar{align-self:flex-end}
+
+.alt-body{display:block;width:100%}
+.alt-body[hidden]{display:none}
+.alt-body .entry{max-width:74%}
+
+/* 翻页条：气泡正下方的一枚小胶囊，保证一眼能看到 */
+.alt-bar{
+  display:flex;align-items:center;gap:6px;flex-wrap:nowrap;
+  white-space:nowrap;
+  font-size:11.5px;color:var(--ink3);
+  padding:2px 9px;border-radius:999px;
+  background:var(--white);border:1px solid var(--line-soft);
+  margin-top:2px;
+}
+.alt-bar .alt-pos{
+  display:inline-flex;align-items:center;gap:3px;
+  white-space:nowrap;word-break:keep-all;
+  font-variant-numeric:tabular-nums;
+  color:var(--ink3);
+}
+.alt-bar .alt-pos b{display:inline;color:var(--ink2);font-weight:600}
+.alt-bar .alt-time{
+  margin-left:4px;font-size:11px;font-variant-numeric:tabular-nums;opacity:.65;
+}
+/* 箭头做成纯文字，不画方框（方块样式太抢眼） */
+.alt-nav{
+  flex:none;width:auto;height:auto;padding:0 3px;line-height:1;
+  display:inline-flex;align-items:center;justify-content:center;
+  border:0;border-radius:0;background:none;
+  color:var(--ink3);font-size:14px;cursor:pointer;
+}
+.alt-nav:hover{background:none;color:var(--accent)}
+
+/* ─── 27 讨论串：每条关系消息的完整正文（超 6em 折叠） ─────── */
+.thread-item{
+  background:var(--white);border:1px solid var(--line-soft);border-radius:12px;
+  padding:9px 12px 10px;margin-bottom:8px;
+}
+.thread-head{
+  display:flex;align-items:center;gap:8px;
+  font-size:11.5px;color:var(--ink3);margin-bottom:6px;
+}
+.thread-where{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.thread-open{
+  flex:none;border:1px solid var(--line);background:var(--white);border-radius:7px;
+  padding:2px 9px;font-size:11.5px;color:var(--accent);cursor:pointer;font-family:inherit;
+}
+.thread-open:hover{background:var(--accent-soft);border-color:var(--accent)}
+
+/* 正文：默认展开显示全文；超过 6em（和 .md-quote.collapsible 同一阈值）才折叠 */
+.thread-body{
+  position:relative;font-size:13.5px;line-height:1.7;
+  color:var(--ink2);white-space:pre-wrap;word-break:break-word;
+  max-height:6em;overflow:hidden;
+}
+.thread-body.collapsible{cursor:pointer}
+.thread-body.collapsible::after{
+  content:'⋯ 点击展开';position:absolute;left:0;right:0;bottom:0;text-align:center;
+  font-size:11px;color:var(--accent);padding:18px 0 2px;letter-spacing:.5px;
+  background:linear-gradient(transparent,var(--white) 65%);pointer-events:none;
+}
+.thread-body.expanded{max-height:none}
+.thread-body.expanded::after{display:none}
+.thread-body img.eimg{max-width:100%;border-radius:8px}
+
+/* 更正 26：每个版本自己的横向行（工具按钮贴着气泡，和普通消息一致） */
+.alt-line{display:flex;align-items:flex-start;gap:8px;width:100%}
+.entry-row.reply-entry .alt-line{justify-content:flex-start}
+.entry-row.reply-entry .alt-line .tools{order:1}
+.entry-row.alt-row:not(.reply-entry) .alt-line{justify-content:flex-end}
+.entry-row.alt-row:not(.reply-entry) .alt-line .tools{order:0}
+.alt-line .entry{max-width:74%}
+.alt-line .tools{margin-top:8px}
+
+/* ─── 28 贴纸（Telegram / QQ 导入） ─────────────────────────── */
+/* 贴纸按小图显示，不按普通照片铺满 */
+img.eimg[alt^="sticker:"]{max-width:160px;max-height:160px;width:auto;height:auto;border-radius:10px}
+/* 没有文件时的 emoji 占位（:::sticker 💖:::） */
+.tg-sticker{
+  display:inline-flex;align-items:center;justify-content:center;
+  min-width:52px;min-height:52px;padding:2px 10px;
+  border-radius:12px;background:var(--paper);border:1px solid var(--line-soft);
+  font-size:34px;line-height:1.1;vertical-align:middle;
+}
+
+/* ─── 29 主视角（聊天导入：选一个成员当“我”） ─────────── */
+.entry-row.pov-me{justify-content:flex-end}
+.entry-row.pov-me .tools{order:0}
+.entry-row.pov-me .entry{
+  border-radius:14px 14px 4px 14px;
+  background:var(--bubble);
+}
+.entry-row.pov-other{justify-content:flex-start}
+.entry-row.pov-other .tools{order:1}
+.entry-row.pov-other .entry{
+  border-radius:14px 14px 14px 4px;
+  background:var(--paper);
 }
