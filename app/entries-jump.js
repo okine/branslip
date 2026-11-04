@@ -318,14 +318,59 @@ export function scrollToCurrentTop() {
   scrollIntoViewIn(sc, t.el, { align: 'top', offset: padTop });
 }
 
+/* 图片、content-visibility、字体都会在滚动后继续改变内容高度。
+   回到底部不能只滚一次，否则 smooth 的目标高度早就过期了。 */
+let bottomSettleRO = null;
+let bottomSettleTimer = 0;
+let bottomSettleAC = null;
+
+function stopBottomSettle() {
+  if (bottomSettleRO) { bottomSettleRO.disconnect(); bottomSettleRO = null; }
+  if (bottomSettleTimer) { clearTimeout(bottomSettleTimer); bottomSettleTimer = 0; }
+  if (bottomSettleAC) { bottomSettleAC.abort(); bottomSettleAC = null; }
+}
+
+function settleBottom(s) {
+  if (!s) return;
+  stopBottomSettle();
+  const box = $('#entries');
+  if (!box) return;
+  const sid = Store.ui.selectedId;
+
+  /* 布局变化时继续贴底；用户主动滚轮/触摸/切换话题则立刻释放。 */
+  if (typeof ResizeObserver === 'function') {
+    bottomSettleRO = new ResizeObserver(() => {
+      if (Store.ui.selectedId !== sid) { stopBottomSettle(); return; }
+      scrollToBottom(s, false);
+    });
+    bottomSettleRO.observe(box);
+  }
+  bottomSettleAC = new AbortController();
+  const stop = () => stopBottomSettle();
+  s.addEventListener('wheel', stop, { passive: true, signal: bottomSettleAC.signal });
+  s.addEventListener('pointerdown', stop, { signal: bottomSettleAC.signal });
+  s.addEventListener('touchstart', stop, { passive: true, signal: bottomSettleAC.signal });
+  bottomSettleTimer = setTimeout(stop, 3000);
+}
+
 export function scrollToLatest() {
+  const s = $('#entriesScroll');
+  const sid = Store.ui.selectedId;
   if (directWindow) {
     /* 直接定位窗口里点向下箭头：回最新一页，不逐批加载中间所有记录 */
     D.renderEntries();
-    scrollToBottom($('#entriesScroll'), true);
+    scrollToBottom(s, true);
+    settleBottom(s);
     return;
   }
-  scrollToBottom($('#entriesScroll'), true);
+  scrollToBottom(s, true);
+  /* 兜底：没有 ResizeObserver 时也在前几帧继续贴底。 */
+  if (typeof ResizeObserver !== 'function') {
+    [0, 60, 180, 400, 900].forEach(t => setTimeout(() => {
+      if (Store.ui.selectedId === sid) scrollToBottom(s, false);
+    }, t));
+  }
+  settleBottom(s);
 }
 
 export function updateScrollBtn() {

@@ -116,6 +116,22 @@ resetImgObserver();   // 首次建立
     }
   }
 
+  /** 清掉 URL 缓存后，把已经水合的 <img> 还原成待水合状态并重新观察。
+      否则它们还挂着被 revoke 的 ObjectURL、又没有 data-src，永远不会再加载。 */
+  export function resetImageHydration(scope) {
+    const root = scope || (typeof document !== 'undefined' ? document : null);
+    if (!root) return;
+    for (const img of root.querySelectorAll('img.eimg')) {
+      /* 观察器已经重建，所有旧 img 都要重新登记，包括还没加载的。 */
+      hydratedSet.delete(img);
+      if (!img.dataset.path) continue;
+      img.dataset.src = img.dataset.path;
+      img.removeAttribute('src');
+      img.classList.remove('ok');
+    }
+    hydrateImages(root);
+  }
+
   /** 关闭全屏页时，把它里面还没进入视口的图片从全局观察器摘掉 */
   export function unobserveImages(scope) {
     if (!scope) return;

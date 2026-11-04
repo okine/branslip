@@ -50,6 +50,7 @@ const state = {
 
 let els = null;
 let callbacks = null;
+let searchIndex = null;
 
 /* ---------- 查询解析 ---------- */
 
@@ -188,6 +189,7 @@ function getDocs() {
   state.docs = buildDocs();
   state.docsRev = state.docs.rev;
   lowerCache.clear();
+  searchIndex = null;   // 数据变了，旧倒排立即释放
   return state.docs;
 }
 
@@ -208,6 +210,69 @@ function lowerOfEntry(e) {
   }
   lowerCache.set(id, s);
   return s;
+}
+
+
+/* ---------- 倒排索引（有界，超出后回退全扫） ----------
+   2-gram 索引：中文两字词、英文子串都能命中。
+   索引只用于验证候选，最终仍走 matchEntry，语义与全扫一致。 */
+const SEARCH_INDEX_MAX_ENTRIES = 160000;
+const SEARCH_INDEX_MAX_POSTINGS = 8000000;
+
+function buildSearchIndex(docs) {
+  let total = 0;
+  for (const n of docs.nodes) total += n.node.entries.length;
+  if (total > SEARCH_INDEX_MAX_ENTRIES) {
+    return { rev: docs.rev, usable: false };
+  }
+
+  const records = [];
+  const grams = new Map();
+  let postings = 0;
+
+  for (const n of docs.nodes) {
+    for (const e of n.node.entries) {
+      const recIdx = records.length;
+      records.push({ n, e });
+      const low = lowerOfEntry(e);
+      const seen = new Set();
+      for (let i = 0; i + 1 < low.length; i++) {
+        const g = low.slice(i, i + 2);
+        if (seen.has(g)) continue;
+        seen.add(g);
+        let arr = grams.get(g);
+        if (!arr) { arr = []; grams.set(g, arr); }
+        arr.push(recIdx);
+        postings++;
+        if (postings > SEARCH_INDEX_MAX_POSTINGS) {
+          return { rev: docs.rev, usable: false };
+        }
+      }
+    }
+  }
+  return { rev: docs.rev, usable: true, records, grams };
+}
+
+function getSearchIndex(docs) {
+  if (searchIndex && searchIndex.rev === docs.rev) return searchIndex;
+  searchIndex = buildSearchIndex(docs);
+  return searchIndex;
+}
+
+/* 取所有正向词/短语里最短的一条 gram posting 作为候选。 */
+function indexCandidates(index, q) {
+  const terms = [...q.phrases, ...q.terms];
+  if (!terms.length) return null;
+  let best = null;
+  for (const term of terms) {
+    if (term.length < 2) return null;
+    for (let i = 0; i + 1 < term.length; i++) {
+      const arr = index.grams.get(term.slice(i, i + 2));
+      if (!arr || !arr.length) return [];
+      if (!best || arr.length < best.length) best = arr;
+    }
+  }
+  return best;
 }
 
 /* ---------- 匹配与排序 ---------- */
@@ -255,6 +320,34 @@ function scoreEntry(d, q) {
   return score;
 }
 
+function matchEntry(n, e, q) {
+  /* 先用便宜的过滤把大部分记录排除，最后才建结果对象 */
+  if (q.topic && !n.titleLower.includes(q.topic)) return null;
+  if (q.after != null && e.createdAt < q.after) return null;
+  if (q.before != null && e.createdAt > q.before) return null;
+  if (q.pinned && !Mutate.isPinned(n.node, e)) return null;
+  if (q.hasImage && !hasImage(e.text || '')) return null;
+
+  let tags = EMPTY_TAGS;
+  if (q.tags.length) {
+    tags = tagsOf(e.text || '');
+    for (const tag of q.tags) if (!tags.includes(tag)) return null;
+  }
+
+  const needText = q.terms.length > 0 || q.phrases.length > 0 || q.exclude.length > 0;
+  if (needText) {
+    const low = lowerOfEntry(e);
+    if (!textMatches(low, q)) return null;
+    for (const x of q.exclude) if (n.titleLower.includes(x)) return null;
+  }
+
+  return {
+    e, node: n.node, doc: n, path: n.path,
+    tags,
+    hasImage: q.hasImage,
+  };
+}
+
 function runQuery() {
   const q = state.parsed;
   const docs = getDocs();
@@ -273,38 +366,28 @@ function runQuery() {
   }
 
   const needText = q.terms.length > 0 || q.phrases.length > 0 || q.exclude.length > 0;
-  for (const n of docs.nodes) {
-    if (scopeNode && n.node !== scopeNode) continue;
-    if (q.topic && !n.titleLower.includes(q.topic)) continue;
-    for (const e of n.node.entries) {
-      /* 先用便宜的过滤把大部分记录排除，最后才建结果对象 */
-      if (q.after != null && e.createdAt < q.after) continue;
-      if (q.before != null && e.createdAt > q.before) continue;
-      if (q.pinned && !Mutate.isPinned(n.node, e)) continue;
-      if (q.hasImage && !hasImage(e.text || '')) continue;
+  const positive = [...q.phrases, ...q.terms];
+  const canIndex = positive.length > 0 && positive.every(t => t.length >= 2);
+  const index = canIndex ? getSearchIndex(docs) : null;
+  const candidateIdx = index && index.usable ? indexCandidates(index, q) : null;
 
-      let tags = EMPTY_TAGS;
-      if (q.tags.length) {
-        tags = tagsOf(e.text || '');
-        let ok = true;
-        for (const tag of q.tags) if (!tags.includes(tag)) { ok = false; break; }
-        if (!ok) continue;
+  if (candidateIdx) {
+    for (const ri of candidateIdx) {
+      const rec = index.records[ri];
+      if (!rec) continue;
+      const n = rec.n;
+      if (scopeNode && n.node !== scopeNode) continue;
+      const d = matchEntry(n, rec.e, q);
+      if (d) entries.push({ doc: d, score: scoreEntry(d, q) });
+    }
+  } else {
+    for (const n of docs.nodes) {
+      if (scopeNode && n.node !== scopeNode) continue;
+      if (q.topic && !n.titleLower.includes(q.topic)) continue;
+      for (const e of n.node.entries) {
+        const d = matchEntry(n, e, q);
+        if (d) entries.push({ doc: d, score: scoreEntry(d, q) });
       }
-
-      if (needText) {
-        const low = lowerOfEntry(e);
-        if (!textMatches(low, q)) continue;
-        let bad = false;
-        for (const x of q.exclude) if (n.titleLower.includes(x)) { bad = true; break; }
-        if (bad) continue;
-      }
-
-      const d = {
-        e, node: n.node, doc: n, path: n.path,
-        tags,
-        hasImage: q.hasImage,
-      };
-      entries.push({ doc: d, score: scoreEntry(d, q) });
     }
   }
 

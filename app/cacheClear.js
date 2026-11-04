@@ -15,7 +15,7 @@
  */
 
 import { Store } from './store.js';
-import { clearPendingAll, clearPendingForNode, resetImgObserver } from './image.js';
+import { clearPendingAll, clearPendingForNode, resetImgObserver, resetImageHydration } from './image.js';
 import { clearMDCache } from './md.js';
 import { clearEarlierObs, clearLaterObs, clearScrollState } from './entries-jump.js';
 
@@ -30,6 +30,7 @@ export function clearRuntimeCaches(opts) {
   clearEarlierObs();
   clearLaterObs();
   resetImgObserver();         // 断开旧 DOM 图片观察器，重建空观察器
+  resetImageHydration();      // 已水合图片重新挂回 data-src 并重新观察
   Store.ui.loadedStart = 0;
   Store.ui.loadedEnd = 0;
   if (opts.scrollMemo !== false) clearScrollState();
