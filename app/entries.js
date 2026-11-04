@@ -51,6 +51,7 @@ import {
   addGlobalMetaFor,
   ensureGlobalMeta,
   refreshMetaForRefs,
+  resetMeta,
 } from './meta-row.js';
 import {
   armLoadEarlier,
@@ -118,6 +119,28 @@ export function activateAltEntry(eid) {
   return true;
 }
 
+/* 静默话题：只有用户明确点“加载记录”才读盘；启动和搜索都不碰它。 */
+function loadSilentNow(n) {
+  if (!n || n._entriesLoaded || n._silentLoading) return;
+  n._silentLoading = true;
+  const btn = document.querySelector('#silentLoad');
+  if (btn) { btn.disabled = true; btn.textContent = '正在加载…'; }
+  import('./loader.js')
+    .then(({ loadSilentTopic }) => loadSilentTopic(n))
+    .then(() => {
+      n._silentLoading = false;
+      Store.rebuildIndex();
+      resetMeta();
+      updateTopCount();
+      if (Store.ui.selectedId === n.id) renderEntries();
+    })
+    .catch(e => {
+      n._silentLoading = false;
+      if (btn) { btn.disabled = false; btn.textContent = '加载记录'; }
+      toast('读取静默话题失败：' + ((e && e.message) || e));
+    });
+}
+
 export function renderEntries() {
   setDirectWindow(false);
   clearEarlierObs();
@@ -143,6 +166,17 @@ export function renderEntries() {
       '<div class="empty"><div class="q">“</div><h3>从左侧开始第一层话题</h3>' +
       '<p>在左下角点击「新建根话题」，每个话题里都能继续<br></p></div>';
     renderPins(); 
+    return;
+  }
+  if (n.silent && !n._entriesLoaded) {
+    rebuildPinRowMap();
+    box.className = '';
+    box.innerHTML = '<div class="empty"><div class="q">“</div><h3>「' + esc(n.title) + '」是静默话题</h3>' +
+      '<p>启动和搜索时不会读取它的记录。需要时再加载。</p>' +
+      '<p style="margin-top:12px"><button class="m-btn" id="silentLoad">加载记录</button></p></div>';
+    const btn = box.querySelector('#silentLoad');
+    if (btn) btn.addEventListener('click', () => loadSilentNow(n));
+    renderPins();
     return;
   }
   if (!n.entries.length ) {

@@ -53,7 +53,7 @@ Storage.listEntries = async dir => {
 };
 Storage.readText = async (dir, name) => (await dir.getFileHandle(name)).getFile().then(f => f.text());
 
-const { scanDir, scanChildren } = await import('../loader.js');
+const { scanDir, scanChildren, loadSilentTopic } = await import('../loader.js');
 
 test('scanDir：读月份文件合并 entries，按时间排序', async () => {
   const dir = mockDir({
@@ -78,6 +78,23 @@ test('scanDir：读月份文件合并 entries，按时间排序', async () => {
   assert.equal(node.entries[0].text, 'A');
   assert.equal(node.entries[1].text, 'B');
   assert.ok(node.entries[0].createdAt < node.entries[1].createdAt);
+});
+
+test('scanDir：silent 话题启动时只读元数据，打开后再加载', async () => {
+  const dir = mockDir({
+    '_话题.json': { kind: 'file', text: '{"createdAt":"2026-09-17 09:00:00.000+08:00","silent":true}' },
+    '_记录-2026-09.md': {
+      kind: 'file',
+      text: '## 2026-09-17 09:00:00.000+08:00\n\n静默内容',
+    },
+  });
+  const node = await scanDir(dir, '静默话题');
+  assert.equal(node.silent, true);
+  assert.equal(node._entriesLoaded, false);
+  assert.equal(node.entries.length, 0);
+  assert.equal(await loadSilentTopic(node), 1);
+  assert.equal(node._entriesLoaded, true);
+  assert.equal(node.entries[0].text, '静默内容');
 });
 
 test('scanDir：同 (createdAt, text) 去重', async () => {

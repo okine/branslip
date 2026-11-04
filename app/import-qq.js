@@ -74,6 +74,21 @@ function findReplyData(msg) {
 
 /* ---------- messages → entries ---------- */
 
+/* ---------- 发送者 ---------- */
+
+/* 已注销 / 不可见账号：QQ 导出里可能 name 为空 */
+const SENDER_UNKNOWN = '（已注销账号）';
+const DELETED_SENDER_NAMES = new Set([
+  'deleted account', 'deleted', '此用户已注销', '已注销账号', '已注销', '未知用户',
+]);
+
+function senderNameOf(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return SENDER_UNKNOWN;
+  if (DELETED_SENDER_NAMES.has(s.toLowerCase())) return SENDER_UNKNOWN;
+  return s;
+}
+
 function messagesToEntries(messages) {
   const entries = [];
   const byId = new Map();
@@ -88,7 +103,7 @@ function messagesToEntries(messages) {
     const isSystem = msg.system === true || msg.type === 'system';
     const senderName = isSystem
       ? ''
-      : String((msg.sender && msg.sender.name) || '').trim();
+      : senderNameOf(msg.sender && msg.sender.name);
 
     const text = renderText(msg);
     if (!text) continue;
@@ -97,7 +112,8 @@ function messagesToEntries(messages) {
 
     const entry = {
       id: uid(),
-      text,
+      /* QQ 系统消息用 ::system 块保存，重载后仍能按服务消息渲染 */
+      text: isSystem ? (':::system\n' + text.trim() + '\n:::') : text,
       createdAt: Number(msg.timestamp) || 0,
       edited: false,
       editedAt: null,

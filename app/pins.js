@@ -175,14 +175,17 @@ export function openPinPage() {
     render: () => {
       if (!list.length)
         return '<div class="pp-empty">这个话题还没有置顶的记录</div>';
-      return list.map(e => {
+      return list.map((e, i) => {
         const { html: body } = renderEntryBody(e);
         return '<div class="pp-card" data-eid="' + e.id + '">' + body +
           '<span class="meta">' + fmtStamp(e.createdAt) +
             (e.edited ? ' · 已编辑' : '') + '</span>' +
-          '<div class="pp-acts">' +
-            '<button data-goto="' + e.id + '">定位到消息</button>' +
-            '<button data-unpin="' + e.id + '">取消置顶</button>' +
+          '<div class="pp-foot">' +
+            '<span class="pp-num">#' + (i + 1) + '</span>' +
+            '<div class="pp-acts">' +
+              '<button data-goto="' + e.id + '">定位到消息</button>' +
+              '<button data-unpin="' + e.id + '">取消置顶</button>' +
+            '</div>' +
           '</div></div>';
       }).join('');
     },

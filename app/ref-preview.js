@@ -13,7 +13,7 @@
 import { esc } from './utils.js';
 import { fmtStamp } from './format.js';
 import { stripImages, stripQuoteHeader } from './md.js';
-import { Mutate } from './mutate.js';
+import { Store } from './store.js';
 import { findTopicByRefId, findByPath } from './tree-utils.js';
 
 let previewTimer = null;
@@ -38,7 +38,20 @@ function showRefPreview(ref) {
     return;
   }
 
-  if (bid) entry = node.entries.find(e => Mutate.entryBlockId(e) === bid);
+  if (bid) {
+    /* 直接走 blockIndex：O(1)，而且目标可能不在按路径找到的那个话题里。
+       找不到就明确显示"不存在"，不要退化成"最近 3 条"。 */
+    const hit = Store.blockEntry(bid);
+    if (hit && hit.e) {
+      entry = hit.e;
+      if (hit.node) node = hit.node;
+    }
+  }
+
+  if (bid && !entry) {
+    showCard(ref, '<div class="ref-preview-empty">引用的记录已不存在</div>');
+    return;
+  }
 
   let html;
   if (entry) {
@@ -51,7 +64,8 @@ function showRefPreview(ref) {
     html = '<div class="ref-preview-head">' + esc(node.title) + '</div>' +
            '<div class="ref-preview-time">' + node.entries.length + ' 条记录</div>' +
            '<div class="ref-preview-body">' +
-             recent.map(e => '· ' + esc(e.text.slice(0, 60))).join('<br>') +
+             recent.map(e => '· ' + esc(stripQuoteHeader(stripImages(e.text)).slice(0, 60)))
+               .join('<br>') +
            '</div>';
   }
 

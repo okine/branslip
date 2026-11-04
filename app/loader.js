@@ -62,6 +62,8 @@ export async function scanDir(dir, name) {
   node.intro    = '';
   node.owner    = null;
   node.scroll   = null;
+  node.silent   = false;
+  let metaSilent = false;
   try {
     const raw = await Storage.readText(dir, '_话题.json');
     const meta = JSON.parse(raw) || {};
@@ -74,6 +76,8 @@ export async function scanDir(dir, name) {
     /* 简介的创建时间 / 最后更新时间（都在 _话题.json 里） */
     node.introCreatedAt = typeof meta.introCreatedAt === 'string' ? meta.introCreatedAt : null;
     node.introAt  = typeof meta.introAt === 'string' ? meta.introAt : null;
+    metaSilent    = meta.silent === true;
+    node.silent   = metaSilent;
     if (meta.scroll && Number.isFinite(meta.scroll.top)) {
       node.scroll = { top: meta.scroll.top };
       /* 顶部锚点（新格式才有）：记录 id + 像素偏移，跨分页/清缓存更稳 */
@@ -85,10 +89,19 @@ export async function scanDir(dir, name) {
   } catch (e) {}
 
   const items = await Storage.listEntries(dir);
+  const entryFiles = [];
   for (const { name: fn, kind } of items) {
     if (kind !== 'file') continue;
     if (fn === ENTRY_FILE || MONTH_RE.test(fn)) {
       if (fn === ENTRY_FILE) node._hasOldFile = true;
+      entryFiles.push(fn);
+    }
+  }
+  node._entryFiles = entryFiles;
+  node._entriesLoaded = !metaSilent;
+
+  if (!metaSilent) {
+    for (const fn of entryFiles) {
       jobs.push((async () => {
         try {
           const txt = await Storage.readText(dir, fn);
@@ -108,18 +121,9 @@ export async function scanDir(dir, name) {
         }
       })());
     }
-  }
-  await Promise.all(jobs);
-  node.entries.sort((a, b) => a.createdAt - b.createdAt);
-
-  /* 去重：旧单文件合并、追加写入崩溃导致的双重落盘，都靠这里兜底 */
-  {
-    const seen = new Set();
-    node.entries = node.entries.filter(e => {
-      const k = e.createdAt + '\u0000' + e.text;
-      if (seen.has(k)) return false;
-      seen.add(k); return true;
-    });
+    await Promise.all(jobs);
+    node.entries.sort((a, b) => a.createdAt - b.createdAt);
+    dedupeEntries(node);
   }
 
   const [pinned, folds, children] = await Promise.all([
@@ -131,6 +135,39 @@ export async function scanDir(dir, name) {
   node.folds = folds;
   node.children = children;
   return node;
+}
+
+function dedupeEntries(node) {
+  /* 去重：旧单文件合并、追加写入崩溃导致的双重落盘，都靠这里兜底 */
+  const seen = new Set();
+  node.entries = node.entries.filter(e => {
+    const k = e.createdAt + '\u0000' + e.text;
+    if (seen.has(k)) return false;
+    seen.add(k); return true;
+  });
+}
+
+/** 静默话题：用户真正打开它时才读取全部记录。 */
+export async function loadSilentTopic(node) {
+  if (!node || node._entriesLoaded) return 0;
+  const files = node._entryFiles || [];
+  let added = 0;
+  for (const fn of files) {
+    try {
+      const txt = await Storage.readText(node._dir, fn);
+      const parsed = parseEntries(txt);
+      if (!parsed.length && /^##\s/m.test(txt)) node._loadErrors.add(fn);
+      node.entries.push(...parsed);
+      added += parsed.length;
+    } catch (e) {
+      node._loadErrors.add(fn);
+      console.error('[silent] 读取失败:', node.title, fn, e);
+    }
+  }
+  node.entries.sort((a, b) => a.createdAt - b.createdAt);
+  dedupeEntries(node);
+  node._entriesLoaded = true;
+  return added;
 }
 
 /* ---------- 重扫（app.js 只负责注入渲染能力） ---------- */

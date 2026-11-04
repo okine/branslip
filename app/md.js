@@ -343,28 +343,46 @@ export function clearMDCache() {
 
 /* ---------- 图片拆分 ---------- */
 
-export const IMG_RE = /!\[([^\]]*)\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)/g;
+/* 图片语法的唯一来源：alt、path（不含空白/右括号）、可选 title。
+   其他模块不要自己再写 ![..](..) 正则。 */
+const IMG_SRC = '!\\[([^\\]]*)\\]\\(\\s*([^)\\s]+)(?:\\s+"[^"]*")?\\s*\\)';
+export const IMG_RE = new RegExp(IMG_SRC, 'g');
 
-/* 图片语法相关的小工具：避免各处重复写 ![..](..) 正则 */
+/** 一次遍历拿到所有图片：{ alt, path, index, raw }。新建正则，不共享 lastIndex。 */
+export function imageRefs(text) {
+  const re = new RegExp(IMG_SRC, 'g');
+  const s = String(text || '');
+  const out = [];
+  let m;
+  while ((m = re.exec(s))) {
+    out.push({ alt: m[1] || '', path: m[2], index: m.index, raw: m[0] });
+  }
+  return out;
+}
+
+/** 替换所有图片语法；repl(alt, path)。 */
+export function replaceImages(text, repl) {
+  const re = new RegExp(IMG_SRC, 'g');
+  return String(text || '').replace(re, (m, alt, p) => repl(alt || '', p || ''));
+}
+
 export function hasImage(text) {
-  IMG_RE.lastIndex = 0;
-  return IMG_RE.test(String(text || ''));
+  return imageRefs(text).length > 0;
 }
 
 export function stripImages(text) {
-  IMG_RE.lastIndex = 0;
-  return String(text || '').replace(IMG_RE, ' ');
+  return replaceImages(text, () => ' ');
 }
 
 export function splitByImage(text) {
-  const parts = []; let last = 0, m;
-  IMG_RE.lastIndex = 0;
-  while ((m = IMG_RE.exec(text))) {
-    if (m.index > last) parts.push({ t: text.slice(last, m.index) });
-    parts.push({ img: m[2], alt: m[1] });
-    last = m.index + m[0].length;
+  const s = String(text || '');
+  const parts = []; let last = 0;
+  for (const r of imageRefs(s)) {
+    if (r.index > last) parts.push({ t: s.slice(last, r.index) });
+    parts.push({ img: r.path, alt: r.alt });
+    last = r.index + r.raw.length;
   }
-  if (last < text.length) parts.push({ t: text.slice(last) });
+  if (last < s.length) parts.push({ t: s.slice(last) });
   return parts;
 }
 

@@ -23,7 +23,7 @@ import { I } from './icons.js';
 import { Store } from './store.js';
 import { Mutate } from './mutate.js';
 import { fmtStamp, entryBlockId } from './format.js';
-import { IMG_RE, buildRef, splitByImage, invalidateMDCache, listRelevanceTitles, stripQuoteHeader } from './md.js';
+import { imageRefs, buildRef, splitByImage, invalidateMDCache, listRelevanceTitles, stripQuoteHeader } from './md.js';
 import {
   persistMonthOf, pushTrash, writePins, writeFolds,
   copyAttachment, TRASH_MAX,
@@ -433,7 +433,7 @@ export function moveEntryTo(ent, fromNode) {
       Mutate.addPin(t, ent);
     }
 
-    const paths = [...ent.text.matchAll(IMG_RE)].map(m => m[2]);
+    const paths = imageRefs(ent.text).map(r => r.path);
 
     enqueue(async () => {
       try {

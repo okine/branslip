@@ -18,7 +18,7 @@ import { I } from './icons.js';
 import { Store } from './store.js';
 import { Mutate } from './mutate.js';
 import { imgStamp,stampForWrite, nextCreatedAtMs, CLOCK_DRIFT_THRESHOLD } from './format.js';
-import { buildRef, stripQuoteHeader } from './md.js';
+import { buildRef, stripQuoteHeader, imageRefs } from './md.js';
 import { appendMonthEntry } from './io.js';
 import {
   processImage, getImageURL,
@@ -170,8 +170,9 @@ function nextCreatedAt(node) {
   return ms;
 }
 function flushPendingImages(n, text) {
-  const RE = /!\[[^\]]*\]\(attachments\/([^)\s]+)\)/g;
-  const refs = [...text.matchAll(RE)].map(m => m[1]);
+  const refs = imageRefs(text)
+    .filter(r => r.path.startsWith('attachments/'))
+    .map(r => r.path.slice('attachments/'.length));
 
   /* 第一趟：把待写 blob 拿出来（takePendingBlob 会从 pending 里删掉） */
   const pending = new Map();
@@ -313,8 +314,6 @@ export function restoreDraft(nodeId) {
  * 图片预览条
  * ============================================================ */
 
-const IMG_REF_RE = /!\[[^\]]*\]\((attachments\/[^)\s]+)\)/g;
-
 function previewKey(node, path) { return node.id + '\u0000' + path; }
 
 function ensurePreviewURL(node, path) {
@@ -347,10 +346,9 @@ function _refreshPreview() {
   const node = Store.node(Store.ui.selectedId);
   if (!node) { previewBox.innerHTML = ''; return; }
 
-  const paths = [];
-  IMG_REF_RE.lastIndex = 0;
-  let m;
-  while ((m = IMG_REF_RE.exec(ta.value))) paths.push(m[1]);
+  const paths = imageRefs(ta.value)
+    .filter(r => r.path.startsWith('attachments/'))
+    .map(r => r.path);
 
   /* ★ 清理当前话题下、输入框里不再引用的 pending blob */
   const wantSet = new Set(paths);
@@ -415,12 +413,10 @@ previewBox.addEventListener('click', e => {
   const cur = Store.node(Store.ui.selectedId);
   if (cur) discardImage(cur, path);
   const v = ta.value;
-  IMG_REF_RE.lastIndex = 0;
-  let m, hit = null;
-  while ((m = IMG_REF_RE.exec(v))) if (m[1] === path) { hit = m; break; }
+  const hit = imageRefs(v).find(r => r.path === path);
   if (!hit) return;
 
-  let s = hit.index, e2 = hit.index + hit[0].length;
+  let s = hit.index, e2 = hit.index + hit.raw.length;
   if (v[e2] === '\n') e2++;
   else if (v[s - 1] === '\n') s--;
   ta.value = v.slice(0, s) + v.slice(e2);

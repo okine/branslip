@@ -45,6 +45,7 @@ const state = {
   selected: -1,
   generation: 0,
   panelOpen: false,
+  scope: 'all',   /* 'all' | 'topic' */
 };
 
 let els = null;
@@ -148,6 +149,9 @@ function tagsOf(text) {
   return out;
 }
 
+/* 没有标签过滤时共享同一个空数组，避免每条结果都分配 */
+const EMPTY_TAGS = [];
+
 /* 搜索结果只显示"这条记录所在的话题"（也就是路径里离记录最近的那段）；
    完整路径放进 title 提示，悬停可见。 */
 function parentPath(doc) {
@@ -157,37 +161,26 @@ function parentPath(doc) {
 
 function buildDocs() {
   const nodes = [];
-  const entries = [];
 
   (function rec(parent) {
     for (const n of parent.children) {
       const path = pathTitles(n);
-      const doc = {
-        node: n,
-        title: n.title,
-        titleLower: n.title.toLowerCase(),
-        path,
-      };
-      nodes.push(doc);
-      for (const e of n.entries) {
-        const text = e.text || '';
-        entries.push({
-          e, node: n, doc,
-          /* 结果行要显示"话题路径"：这里直接复用节点那条 path 字符串（同一引用，
-             不额外占内存）。少了它搜索结果里就会显示 undefined。 */
+      /* 静默话题在真正打开前不参与全局搜索（也不触发加载） */
+      if (!(n.silent && !n._entriesLoaded)) {
+        nodes.push({
+          node: n,
+          title: n.title,
+          titleLower: n.title.toLowerCase(),
           path,
-          /* 不再各存一份 text / textLower：
-             text 直接用 e.text（同一个字符串引用），小写版本按需算并进 LRU，
-             省掉"每条记录额外一份小写副本"的常驻内存。 */
-          tags: tagsOf(text),
-          hasImage: hasImage(text),
         });
       }
       rec(n);
     }
   })(Store.root);
 
-  return { nodes, entries, rev: Store.dataRevision };
+  /* 不再为每一条记录建 doc 对象（100 万条 ≈ 1 GB）。
+     查询时直接遍历 node.entries，只为命中的记录建结果对象。 */
+  return { nodes, rev: Store.dataRevision };
 }
 
 function getDocs() {
@@ -198,20 +191,22 @@ function getDocs() {
   return state.docs;
 }
 
-/* 小写文本的 LRU：只有被查询命中的记录才会驻留，最多 LOWER_CACHE_MAX 条 */
-const LOWER_CACHE_MAX = 2000;
+/* 小写文本按 entry.id 缓存：跨查询复用；最多 5000 条，避免 1M 记录常驻小写副本。 */
+const LOWER_CACHE_MAX = 5000;
 const lowerCache = new Map();
-function lowerOf(d) {
-  let s = lowerCache.get(d);
+function lowerOfEntry(e) {
+  const id = e && e.id;
+  if (!id) return String((e && e.text) || '').toLowerCase();
+  let s = lowerCache.get(id);
   if (s != null) {
-    lowerCache.delete(d); lowerCache.set(d, s);   // 提到最近使用
+    lowerCache.delete(id); lowerCache.set(id, s);
     return s;
   }
-  s = ((d.e && d.e.text) || '').toLowerCase();
+  s = String(e.text || '').toLowerCase();
   if (lowerCache.size >= LOWER_CACHE_MAX) {
     lowerCache.delete(lowerCache.keys().next().value);
   }
-  lowerCache.set(d, s);
+  lowerCache.set(id, s);
   return s;
 }
 
@@ -241,31 +236,23 @@ function scoreTopic(titleLower, q) {
   return score;
 }
 
+function countOccurrences(hay, needle) {
+  if (!needle) return 0;
+  let n = 0, i = 0;
+  while ((i = hay.indexOf(needle, i)) >= 0) { n++; i += needle.length; }
+  return n;
+}
+
 function scoreEntry(d, q) {
   let score = 0;
-  const low = lowerOf(d);
+  const low = lowerOfEntry(d.e);
   for (const p of q.phrases) if (low.includes(p)) score += 220;
   for (const t of q.terms) {
-    const n = low.split(t).length - 1;
-    score += Math.min(120, n * 18);
+    score += Math.min(120, countOccurrences(low, t) * 18);
   }
   for (const tag of q.tags) if (d.tags.includes(tag)) score += 80;
   score += Math.min(30, ((d.e && d.e.text) || '').length / 120);
   return score;
-}
-
-function entryMatches(d, q) {
-  if (q.topic && !d.doc.titleLower.includes(q.topic)) return false;
-  if (q.pinned && !Mutate.isPinned(d.node, d.e)) return false;
-  if (q.hasImage && !d.hasImage) return false;
-  if (q.after != null && d.e.createdAt < q.after) return false;
-  if (q.before != null && d.e.createdAt > q.before) return false;
-  for (const tag of q.tags) if (!d.tags.includes(tag)) return false;
-  const low = lowerOf(d);
-  for (const x of q.exclude) {
-    if (low.includes(x) || d.doc.titleLower.includes(x)) return false;
-  }
-  return textMatches(low, q);
 }
 
 function runQuery() {
@@ -273,9 +260,11 @@ function runQuery() {
   const docs = getDocs();
   const topics = [];
   const entries = [];
+  const scopeNode = state.scope === 'topic' ? Store.node(Store.ui.selectedId) : null;
 
   if (hasTextQuery(q) && !q.pinned && !q.hasImage && !q.tags.length && !q.after && !q.before) {
     for (const n of docs.nodes) {
+      if (scopeNode && n.node !== scopeNode) continue;
       if (!textMatches(n.titleLower, q)) continue;
       if (q.topic && !n.titleLower.includes(q.topic)) continue;
       const score = scoreTopic(n.titleLower, q);
@@ -283,9 +272,40 @@ function runQuery() {
     }
   }
 
-  for (const d of docs.entries) {
-    if (!entryMatches(d, q)) continue;
-    entries.push({ doc: d, score: scoreEntry(d, q) });
+  const needText = q.terms.length > 0 || q.phrases.length > 0 || q.exclude.length > 0;
+  for (const n of docs.nodes) {
+    if (scopeNode && n.node !== scopeNode) continue;
+    if (q.topic && !n.titleLower.includes(q.topic)) continue;
+    for (const e of n.node.entries) {
+      /* 先用便宜的过滤把大部分记录排除，最后才建结果对象 */
+      if (q.after != null && e.createdAt < q.after) continue;
+      if (q.before != null && e.createdAt > q.before) continue;
+      if (q.pinned && !Mutate.isPinned(n.node, e)) continue;
+      if (q.hasImage && !hasImage(e.text || '')) continue;
+
+      let tags = EMPTY_TAGS;
+      if (q.tags.length) {
+        tags = tagsOf(e.text || '');
+        let ok = true;
+        for (const tag of q.tags) if (!tags.includes(tag)) { ok = false; break; }
+        if (!ok) continue;
+      }
+
+      if (needText) {
+        const low = lowerOfEntry(e);
+        if (!textMatches(low, q)) continue;
+        let bad = false;
+        for (const x of q.exclude) if (n.titleLower.includes(x)) { bad = true; break; }
+        if (bad) continue;
+      }
+
+      const d = {
+        e, node: n.node, doc: n, path: n.path,
+        tags,
+        hasImage: q.hasImage,
+      };
+      entries.push({ doc: d, score: scoreEntry(d, q) });
+    }
   }
 
   topics.sort((a, b) => b.score - a.score);
@@ -358,9 +378,20 @@ function showPanel(show) {
   if (els.tree) els.tree.hidden = show;
 }
 
+function scopeTabsHTML() {
+  const hasTopic = !!Store.node(Store.ui.selectedId);
+  return '<div class="search-scope">' +
+    '<button type="button" data-search-scope="topic"' +
+      (state.scope === 'topic' ? ' class="on"' : '') +
+      (hasTopic ? '' : ' disabled') + '>当前话题</button>' +
+    '<button type="button" data-search-scope="all"' +
+      (state.scope === 'all' ? ' class="on"' : '') + '>全部话题</button>' +
+  '</div>';
+}
+
 function renderLoading() {
   if (!els?.panel) return;
-  els.panel.innerHTML = '<div class="hint">搜索中…</div>';
+  els.panel.innerHTML = scopeTabsHTML() + '<div class="hint">搜索中…</div>';
 }
 
 function renderResults() {
@@ -370,7 +401,7 @@ function renderResults() {
   const totalEntries = state.entries.length;
   const shownTopics = state.topics.slice(0, state.shownTopics);
   const shownEntries = state.entries.slice(0, state.shownEntries);
-  let h = '';
+  let h = scopeTabsHTML();
   state.flat = [];
 
   if (totalTopics) {
@@ -412,8 +443,8 @@ function renderResults() {
     }
   }
 
-  if (!h) {
-    h = '<div class="hint">没有找到与「' + esc(state.query) + '」相关的内容</div>';
+  if (!state.topics.length && !state.entries.length) {
+    h += '<div class="hint">没有找到与「' + esc(state.query) + '」相关的内容</div>';
   }
   els.panel.innerHTML = h;
   updateSelection();
@@ -445,6 +476,7 @@ export function runSearch() {
   const gen = ++state.generation;
 
   if (!text) { clearSearch(); return; }
+  if (state.scope === 'topic' && !Store.node(Store.ui.selectedId)) state.scope = 'all';
 
   state.query = text;
   state.parsed = parseQuery(text);
@@ -475,8 +507,20 @@ export function clearSearch() {
 
 export function setQuery(text) {
   if (!els?.input) return;
+  state.scope = 'all';
   els.input.value = text || '';
   runSearch();
+}
+
+/** 从话题详情旁的搜索按钮进入：限定当前话题。 */
+export function searchInTopic() {
+  state.scope = 'topic';
+  const n = Store.node(Store.ui.selectedId);
+  if (els?.input) {
+    els.input.placeholder = n ? ('搜索「' + n.title + '」…') : '先选择一个话题';
+    els.input.focus();
+  }
+  if (String(els?.input?.value || '').trim()) runSearch();
 }
 
 export function focusSearch() {
@@ -505,7 +549,7 @@ export function initSearch(opts) {
   };
 
   if (els.button) {
-    els.button.addEventListener('click', () => runSearch());
+    els.button.addEventListener('click', () => { state.scope = 'all'; runSearch(); });
   }
 
   if (els.input) {
@@ -542,6 +586,19 @@ export function initSearch(opts) {
 
   if (els.panel) {
     els.panel.addEventListener('click', ev => {
+      const scopeBtn = ev.target.closest('[data-search-scope]');
+      if (scopeBtn) {
+        const next = scopeBtn.dataset.searchScope;
+        if (next !== 'topic' && next !== 'all') return;
+        if (next === 'topic' && !Store.node(Store.ui.selectedId)) return;
+        if (state.scope === next) return;
+        state.scope = next;
+        if (state.parsed && hasQuery(state.parsed)) {
+          runQuery();
+          renderResults();
+        }
+        return;
+      }
       const more = ev.target.closest('[data-search-more]');
       if (more) {
         if (more.dataset.searchMore === 'topics') state.shownTopics += 50;

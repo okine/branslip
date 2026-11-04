@@ -10,7 +10,7 @@
 
 import { Store } from './store.js';
 import { resolveFile } from './io.js';
-import { IMG_RE } from './md.js';
+import { imageRefs } from './md.js';
 import { fmtDay, fmtTime } from './format.js';
 import { openLightbox } from './ui.js';
 import { scrollIntoViewIn, flashEl } from './scroll-utils.js'
@@ -129,11 +129,41 @@ export async function hydrateIn(container, node) {
 
 /* ---------- 缓存清理 ---------- */
 
+/* 已提交图片 URL 的占用字节，用于按内存而不是按张数淘汰 */
+const urlSizes = new Map();
+let urlCacheBytes = 0;
+
+/* 未发送图片的 URL 独立成第二份缓存：浏览信息流不能把它淘汰掉 */
+const pendingUrls = new Map();
+let pendingBytes = 0;
+
+function dropCachedURL(key) {
+  const u = Store.urlCache.get(key);
+  if (typeof u === 'string') URL.revokeObjectURL(u);
+  Store.urlCache.delete(key);
+  forgetCachedSize(key);
+}
+
+function forgetCachedSize(key) {
+  const size = urlSizes.get(key) || 0;
+  if (size) { urlSizes.delete(key); urlCacheBytes = Math.max(0, urlCacheBytes - size); }
+}
+
+function dropPendingURL(key) {
+  const u = pendingUrls.get(key);
+  if (typeof u === 'string') URL.revokeObjectURL(u);
+  pendingUrls.delete(key);
+  const size = urlSizes.get('p:' + key) || 0;
+  if (size) { urlSizes.delete('p:' + key); pendingBytes = Math.max(0, pendingBytes - size); }
+}
+
 export function clearURLCache() {
   for (const u of Store.urlCache.values()) {
     if (typeof u === 'string') URL.revokeObjectURL(u);   // ← 只 revoke 真实 URL
   }
   Store.urlCache.clear();
+  urlSizes.clear();
+  urlCacheBytes = 0;
 }
 
 export function clearURLCacheFor(nodeId) {
@@ -142,7 +172,12 @@ export function clearURLCacheFor(nodeId) {
     if (k.startsWith(prefix)) {
       if (typeof u === 'string') URL.revokeObjectURL(u);
       Store.urlCache.delete(k);
+      const size = urlSizes.get(k) || 0;
+      if (size) { urlSizes.delete(k); urlCacheBytes = Math.max(0, urlCacheBytes - size); }
     }
+  }
+  for (const k of [...pendingUrls.keys()]) {
+    if (k.startsWith(prefix)) dropPendingURL(k);
   }
 }
 
@@ -165,16 +200,18 @@ const pendingBlobs = new Map();   // key → { blob, name, node }
 
 /**
  * 把一张未发送的图片登记进内存。
- * 同时创建 ObjectURL 放进 Store.urlCache —— 与已提交图片共用缓存。
+ * URL 单独放进 pendingUrls —— 不再和已提交图片共用 LRU。
  */
 export function stageImage(node, path, blob, name) {
   const key = node.id + '\u0000' + path;
-  const old = Store.urlCache.get(key);
-  if (typeof old === 'string') URL.revokeObjectURL(old);
-  Store.urlCache.delete(key);
+  dropCachedURL(key);
+  dropPendingURL(key);
 
   pendingBlobs.set(key, { blob, name, node });
-  Store.urlCache.set(key, URL.createObjectURL(blob));
+  const url = URL.createObjectURL(blob);
+  pendingUrls.set(key, url);
+  const size = (blob && blob.size) || 0;
+  if (size) { urlSizes.set('p:' + key, size); pendingBytes += size; }
 }
 
 /**
@@ -183,13 +220,12 @@ export function stageImage(node, path, blob, name) {
 export function discardImage(node, path) {
   const key = node.id + '\u0000' + path;
   pendingBlobs.delete(key);
-  const cached = Store.urlCache.get(key);
-  if (typeof cached === 'string') URL.revokeObjectURL(cached);
-  Store.urlCache.delete(key);
+  dropPendingURL(key);
 }
 
 /**
- * 取出未发送的 blob 用于写盘。取出即从 pending 中移除。
+ * 取出未发送的 blob 用于写盘。取出即从 pending 中移除；
+ * URL 转进已提交缓存，避免发送后预览闪一下重新加载。
  * 返回 { blob, name, node } | null
  */
 export function takePendingBlob(node, path) {
@@ -197,6 +233,16 @@ export function takePendingBlob(node, path) {
   const p = pendingBlobs.get(key);
   if (!p) return null;
   pendingBlobs.delete(key);
+
+  const url = pendingUrls.get(key);
+  if (typeof url === 'string') {
+    pendingUrls.delete(key);
+    const psize = urlSizes.get('p:' + key) || 0;
+    if (psize) { urlSizes.delete('p:' + key); pendingBytes = Math.max(0, pendingBytes - psize); }
+    Store.urlCache.set(key, url);
+    if (psize) { urlSizes.set(key, psize); urlCacheBytes += psize; }
+    trimURLCache(key);
+  }
   return p;
 }
 
@@ -223,6 +269,9 @@ export function clearPendingForNode(nodeId) {
   for (const key of [...pendingBlobs.keys()]) {
     if (key.startsWith(prefix)) pendingBlobs.delete(key);
   }
+  for (const key of [...pendingUrls.keys()]) {
+    if (key.startsWith(prefix)) dropPendingURL(key);
+  }
   clearURLCacheFor(nodeId);
 }
 
@@ -231,17 +280,33 @@ export function clearPendingForNode(nodeId) {
  */
 export function clearPendingAll() {
   pendingBlobs.clear();
+  for (const key of [...pendingUrls.keys()]) dropPendingURL(key);
   clearURLCache();
 }
 // image.js:getImageURL 里，Store.urlCache.set(key, url) 之后追加
 const URL_CACHE_MAX = 100;
+const URL_CACHE_BYTES_MAX = 128 * 1024 * 1024;   // 128 MB
 
 function evictOldestURL() {
   const firstKey = Store.urlCache.keys().next().value;
   if (firstKey === undefined) return;
-  const v = Store.urlCache.get(firstKey);
-  if (typeof v === 'string') URL.revokeObjectURL(v);
-  Store.urlCache.delete(firstKey);
+  dropCachedURL(firstKey);
+}
+
+/* 按"张数 + 字节"双上限淘汰；keepKey 是刚写入、本轮不能淘汰的键 */
+function trimURLCache(keepKey) {
+  while (Store.urlCache.size > URL_CACHE_MAX || urlCacheBytes > URL_CACHE_BYTES_MAX) {
+    const firstKey = Store.urlCache.keys().next().value;
+    if (firstKey === undefined) return;
+    if (Store.urlCache.size === 1 && firstKey === keepKey) return;
+    if (firstKey === keepKey) {
+      const v = Store.urlCache.get(firstKey);
+      Store.urlCache.delete(firstKey);
+      Store.urlCache.set(firstKey, v);
+      continue;
+    }
+    evictOldestURL();
+  }
 }
 
 
@@ -264,6 +329,11 @@ export function getImageURL(node, path) {
   if (!node || !node._dir) return Promise.resolve(null);
 
   const key = node.id + '\u0000' + path;
+
+  /* 未发送图片优先走 pending 缓存：预览条不应该被信息流的 LRU 淘汰 */
+  const pending = pendingUrls.get(key);
+  if (typeof pending === 'string') return Promise.resolve(pending);
+
   const cached = Store.urlCache.get(key);
   if (typeof cached === 'string') {
     /* LRU：命中即提到队尾，避免被过早淘汰 */
@@ -278,7 +348,9 @@ export function getImageURL(node, path) {
   p = (async () => {
     try {
       const fh = await resolveFile(node._dir, path);
-      const url = URL.createObjectURL(await fh.getFile());
+      const file = await fh.getFile();
+      const size = (file && file.size) || 0;
+      const url = URL.createObjectURL(file);
       /* ★ await 期间缓存可能被清空。此时 key 里不是 p 了，
          直接把刚创建的 URL 扔掉，不写回缓存。 */
       if (Store.urlCache.get(key) !== p) {
@@ -286,26 +358,17 @@ export function getImageURL(node, path) {
         return CACHE_CLEARED;
       }
       Store.urlCache.set(key, url);
-      while (Store.urlCache.size > URL_CACHE_MAX) evictOldestURL();
+      if (size) { urlSizes.set(key, size); urlCacheBytes += size; }
+      trimURLCache(key);
       return url;
     } catch (e) {
       if (Store.urlCache.get(key) === p) Store.urlCache.set(key, false);
       return null;
     }
   })();
+  forgetCachedSize(key);
   Store.urlCache.set(key, p);
-  while (Store.urlCache.size > URL_CACHE_MAX) {
-    // 不要驱逐 p 自己（如果它是唯一的键）
-    if (Store.urlCache.size === 1) break;
-    const firstKey = Store.urlCache.keys().next().value;
-    if (firstKey === key) {
-      // 把 p 挪到队尾，换下一个
-      Store.urlCache.delete(key);
-      Store.urlCache.set(key, p);
-      continue;
-    }
-    evictOldestURL();
-  }
+  trimURLCache(key);
   return p;
 }
 
@@ -370,11 +433,9 @@ export function openTopicLightbox(node, curEntry, curPath, afterLocate) {
   /* 1. 按记录顺序、文本顺序收集 { path, entry } */
   const all = [];
   for (const e of node.entries) {
-    IMG_RE.lastIndex = 0;
-    let m;
-    while ((m = IMG_RE.exec(e.text))) {
-      if (!m[2]) continue;
-      all.push({ path: m[2], entry: e });
+    for (const r of imageRefs(e.text)) {
+      if (!r.path) continue;
+      all.push({ path: r.path, entry: e });
     }
   }
   if (!all.length) return;

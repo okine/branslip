@@ -25,18 +25,19 @@
  */
 
 import { Storage } from './storage.js';
-import { uid } from './utils.js';
+import { uid, esc } from './utils.js';
 import {
   fmtStamp, fmtStampAtTz, monthKey,
   stampForWrite, entryBlockId, localIdFromMs,
   monthKeyOfEntry, dayKeyOfEntry,
 } from './format.js';
-import { sanitizeName, uniqueName, resolveFile, dirOf, writeOrder, writeMonthFile } from './io.js';
+import { sanitizeName, uniqueName, resolveFile, dirOf, writeOrder, writeMonthFile, writePins } from './io.js';
 import { atomicWriteText } from './writeSecurity.js';
 import { Store } from './store.js';
 import { invoke, PLATFORM } from './platform.js';
 import { findNode, pathTitles } from './tree-utils.js';
 import { resetMeta } from './meta-row.js';
+import { imageRefs, replaceImages } from './md.js';
 
 /* ============================================================
  * 中间表示（IR）—— adapter 与 runtime 的契约
@@ -511,8 +512,12 @@ export function freezeWriteStamps(topic) {
  * ============================================================ */
 
 export function previewText(text, maxLen) {
-  const s = String(text || '')
-    .replace(/:::think[\s\S]*?:::/g, '')
+  /* ★ 先抹掉图片/贴纸语法再截断：否则 60 字可能正好切在 ![](...) 中间，
+     回复头里留下没有右括号的图片语法，复制图片时会把下一张图一起吞掉。 */
+  const s = replaceImages(String(text || '').replace(/:::think[\s\S]*?:::/g, ''), (alt) =>
+      /^sticker:/.test(alt) ? '[贴纸]' : '[图片]'
+    )
+    .replace(/:::sticker[ \t]*([^\n:]*?)[ \t]*:::/g, (m, emo) => emo || '[贴纸]')
     .split('\n')
     .map(l => l.trim())
     .filter(l => l && !l.startsWith('📎') && !l.startsWith('>') && !l.startsWith('\\#'))
@@ -639,109 +644,212 @@ function processReplyHeaders(topic, topicIdMap, parentInfo) {
  * 磁盘写入
  * ============================================================ */
 
-async function writeTopic(parentDir, topic, source, opts, onImage) {
+/* 每批复制多少个附件。30 是"一个队列任务别太长"和"别切太碎"的折中。 */
+const COPY_BATCH = 30;
+
+/* 把一段写盘工作放进主队列；没有 step 时直接执行（测试 / 兼容旧调用）。
+   有 step 时，导入的每一步都会单独入队，用户写操作可以在两步之间插进来。 */
+async function runStep(opts, fn) {
+  if (opts && typeof opts.step === 'function') return opts.step(fn);
+  return fn(opts && typeof opts.report === 'function' ? opts.report : () => {});
+}
+
+function workTick(opts, rep) {
+  const w = opts && opts._work;
+  if (!w) return;
+  w.done++;
+  if (typeof rep === 'function') rep(w.done, w.total);
+}
+
+async function copyOnePhoto(photoDir, attachmentsDir, fname) {
+  try {
+    let srcFh;
+    try { srcFh = await resolveFile(photoDir, fname); }
+    catch (e1) { srcFh = await resolveFile(photoDir, 'photos/' + fname); }
+    const blob = await srcFh.getFile();
+    await Storage.writeBlob(attachmentsDir, fname, blob);
+    return true;
+  } catch (err) {
+    console.warn('[import] 图片复制失败', fname, err);
+    return false;
+  }
+}
+
+async function copyOneSticker(photoDir, attachmentsDir, source, target) {
+  const base = String(source).split('/').pop();
+  const candidates = (base && base !== source) ? [source, base] : [source];
+  let lastErr = null;
+  for (const rel of candidates) {
+    try {
+      const srcFh = await resolveFile(photoDir, rel);
+      const blob = await srcFh.getFile();
+      await Storage.writeBlob(attachmentsDir, target, blob);
+      return true;
+    } catch (err) { lastErr = err; }
+  }
+  console.warn('[import] 贴纸复制失败', source, lastErr,
+    '（若选的是 photos 子目录，请改选导出根目录）');
+  return false;
+}
+
+async function writeTopic(parentDir, topic, source, opts) {
   /* 目录名是持久化的真名：重扫时 scanDir 直接用它当 title。
      导入也必须用同一个名字，否则内存里显示原始标题、重载后变成
      sanitize/uniqueName 之后的目录名。 */
-  const dirName = await uniqueName(parentDir, sanitizeName(topic.title));
-  const safeTitle = dirName;
-  const dir = await Storage.getDir(parentDir, dirName, { create: true });
+  let dirName = null;
+  let dir = null;
+  await runStep(opts, async () => {
+    dirName = await uniqueName(parentDir, sanitizeName(topic.title));
+    dir = await Storage.getDir(parentDir, dirName, { create: true });
+  });
+  if (!dir) throw new Error('创建话题目录失败：' + topic.title);
+  const stats = opts.stats || (opts.stats = {
+    topics: 0, entries: 0, images: 0, imageFailed: 0,
+    pins: 0, services: 0, failedConvs: 0, failures: [],
+  });
 
-  /* ★ 新增：图片复制逻辑 */
   if (opts && opts.photoDir) {
-    /* alt 以 sticker: 开头的是贴纸，走下面的 _copy 计划（源文件在 stickers/），
-       这里不能按普通照片去根目录/photos 找，否则会刷一堆"复制失败"。 */
-    const IMG_RE = /!\[([^\]]*)\]\(attachments\/([^)]+)\)/g;
-    const attachmentsDir = await Storage.getDir(dir, 'attachments', { create: true });
+    let attachmentsDir = null;
+    await runStep(opts, async () => {
+      attachmentsDir = await Storage.getDir(dir, 'attachments', { create: true });
+    });
 
+    /* 收集这一话题要复制的附件：同一目标只复制一次 */
+    const jobs = [];
+    const seen = new Set();
     for (const e of topic.entries) {
-      let match;
-      IMG_RE.lastIndex = 0;
-      while ((match = IMG_RE.exec(e.text))) {
-        if (String(match[1] || '').startsWith('sticker:')) continue;
-        const fname = match[2];
-        try {
-          let srcFh;
-          try { srcFh = await resolveFile(opts.photoDir, fname); }
-          catch (e1) { srcFh = await resolveFile(opts.photoDir, 'photos/' + fname); }
-          const blob = await srcFh.getFile();
-          await Storage.writeBlob(attachmentsDir, fname, blob);
-        } catch (err) {
-          console.warn('[import] 图片复制失败', fname, err);
-        } finally {
-          if (onImage) onImage();   /* ★ 成功或失败都推进 */
-        }
+      for (const ref of imageRefs(e.text)) {
+        if (!ref.path.startsWith('attachments/')) continue;
+        if (String(ref.alt || '').startsWith('sticker:')) continue;
+        const fname = ref.path.slice('attachments/'.length);
+        if (seen.has('p:' + fname)) continue;
+        seen.add('p:' + fname);
+        jobs.push({ kind: 'photo', fname });
+      }
+      for (const c of (e._copy || [])) {
+        if (!c || !c.source || !c.target) continue;
+        if (seen.has('s:' + c.target)) continue;
+        seen.add('s:' + c.target);
+        jobs.push({ kind: 'sticker', source: c.source, target: c.target });
       }
     }
 
-    /* 贴纸等"按计划复制"的附件：解析阶段已登记 source → target，
-       同一目标只复制一次（同一张贴纸发很多次时不会重复写盘）。 */
-    const copiedTargets = new Set();
-    for (const e of topic.entries) {
-      for (const c of (e._copy || [])) {
-        if (!c || !c.source || !c.target) continue;
-        if (copiedTargets.has(c.target)) continue;
-        copiedTargets.add(c.target);
-        /* 先按导出根目录的相对路径找；找不到再退回 basename
-           （用户直接把 stickers 目录选进来时也能命中）。 */
-        const base = String(c.source).split('/').pop();
-        const candidates = (base && base !== c.source) ? [c.source, base] : [c.source];
-        let lastErr = null;
-        for (const rel of candidates) {
-          try {
-            const srcFh = await resolveFile(opts.photoDir, rel);
-            const blob = await srcFh.getFile();
-            await Storage.writeBlob(attachmentsDir, c.target, blob);
-            lastErr = null;
-            break;
-          } catch (err) { lastErr = err; }
+    for (let i = 0; i < jobs.length; i += COPY_BATCH) {
+      const batch = jobs.slice(i, i + COPY_BATCH);
+      await runStep(opts, async (rep) => {
+        for (const j of batch) {
+          let ok = false;
+          if (j.kind === 'photo') ok = await copyOnePhoto(opts.photoDir, attachmentsDir, j.fname);
+          else ok = await copyOneSticker(opts.photoDir, attachmentsDir, j.source, j.target);
+          if (ok) stats.images++;
+          else {
+            stats.imageFailed++;
+            if (stats.failures.length < 20) {
+              stats.failures.push('附件复制失败：' + (j.kind === 'photo' ? j.fname : j.target));
+            }
+          }
+          workTick(opts, rep);
         }
-        if (lastErr) {
-          console.warn('[import] 贴纸复制失败', c.source, lastErr,
-            '（若选的是 photos 子目录，请改选导出根目录）');
-        }
-        if (onImage) onImage();
-      }
+      });
     }
   }
 
   const node = {
-    title: safeTitle,
+    title: dirName,
     _dir: dir,
     entries: topic.entries,
   };
+  /* Telegram 等来源带了置顶信息：只保留确实存在于本话题的 createdAt */
+  const pinMs = Array.isArray(topic._importPins) ? topic._importPins : [];
+  const byMs = new Map(node.entries.map(e => [e.createdAt, e]));
+  node.pinned = [];
+  for (const ms of pinMs) if (byMs.has(ms) && !node.pinned.includes(ms)) node.pinned.push(ms);
+  stats.topics++;
+  stats.entries += node.entries.length;
+  stats.pins += node.pinned.length;
+  for (const e of node.entries) {
+    if (String(e.text || '').startsWith(':::system')) stats.services++;
+  }
   const months = new Set(topic.entries.map(e => monthKeyOfEntry(e)));
-  for (const mk of months) await writeMonthFile(node, mk);
+  for (const mk of months) {
+    await runStep(opts, async (rep) => {
+      await writeMonthFile(node, mk);
+      workTick(opts, rep);
+    });
+  }
 
   const topicCreatedAt = fmtStamp(topic.createdAtMs);
-  await atomicWriteText(dir, '_话题.json', JSON.stringify({
-    createdAt: topicCreatedAt,
-    source: source.source,
-    sourceId: source.sourceId,
-    intro: '',
-  }, null, 2));
+  await runStep(opts, async (rep) => {
+    await atomicWriteText(dir, '_话题.json', JSON.stringify({
+      createdAt: topicCreatedAt,
+      source: source.source,
+      sourceId: source.sourceId,
+      intro: '',
+    }, null, 2));
+    workTick(opts, rep);      /* 每个话题算一步 */
+  });
+  if (node.pinned.length) {
+    await runStep(opts, () => writePins(node));
+  }
 
   return {
     id: uid(),
-    title: safeTitle,
+    title: dirName,
     _name: dirName,
     _dir: dir,
     topicId: topicCreatedAt,
+    /* ★ 导入后的内存节点也要带 source/owner：
+       否则刚导入完、还没重扫时，右键菜单判断 n.source 会失败，
+       "设置主视角…" 不会出现（重开应用从 _话题.json 读回 source 后才正常）。 */
+    source: source.source,
+    sourceId: source.sourceId,
+    intro: '',
+    owner: null,
     entries: topic.entries,
     children: [],
-    pinned: [],
+    pinned: node.pinned,
     folds: [],
     _hasOldFile: false,
   };
 }
 
-async function persistRecursive(parentDir, topic, source, opts, onImage) {
-  const node = await writeTopic(parentDir, topic, source, opts, onImage);
+async function persistRecursive(parentDir, topic, source, opts) {
+  const node = await writeTopic(parentDir, topic, source, opts);
   for (const br of topic.branches) {
-    const sub = await persistRecursive(node._dir, br, source, opts, onImage);
+    const sub = await persistRecursive(node._dir, br, source, opts);
     node.children.push(sub);
   }
   return node;
+}
+
+/* 导入工作量：话题数 + 月份文件数 + 待复制附件数（没选导出目录就不算复制） */
+function countWork(topic, countCopies) {
+  let topics = 1, months = 0, copies = 0;
+  const mset = new Set();
+  const seen = new Set();
+  for (const e of topic.entries) {
+    mset.add(monthKeyOfEntry(e));
+    if (countCopies) {
+      for (const ref of imageRefs(e.text)) {
+        if (ref.path.startsWith('attachments/') &&
+            !String(ref.alt || '').startsWith('sticker:')) {
+          seen.add('p:' + ref.path);
+        }
+      }
+      for (const c of (e._copy || [])) {
+        if (c && c.target) seen.add('s:' + c.target);
+      }
+    }
+  }
+  months = mset.size;
+  copies = seen.size;
+  for (const br of topic.branches) {
+    const sub = countWork(br, countCopies);
+    topics += sub.topics;
+    months += sub.months;
+    copies += sub.copies;
+  }
+  return { topics, months, copies };
 }
 
 /* ============================================================
@@ -749,19 +857,6 @@ async function persistRecursive(parentDir, topic, source, opts, onImage) {
  * ============================================================ */
 
 
-/* ---------- 新增：数一个 topic 树里的图片总数 ---------- */
-const IMG_REF_RE = /!\[[^\]]*\]\(attachments\/([^)]+)\)/g;
-
-function countImages(topic) {
-  let n = 0;
-  for (const e of topic.entries) {
-    IMG_REF_RE.lastIndex = 0;
-    let m;
-    while ((m = IMG_REF_RE.exec(e.text))) n++;
-  }
-  for (const br of topic.branches) n += countImages(br);
-  return n;
-}
 /**
  * @param {FileSystemDirectoryHandle} parentDir
  * @param {Array} conversations  [{title, sourceId, sourceCreatedAt, root}]
@@ -782,6 +877,18 @@ function uniquifyTopicTimes(topic, used) {
 }
 
 export async function importAsTopics(parentDir, conversations, source, report, opts) {
+  opts = Object.assign({}, opts || {});
+  opts.report = report;                 /* 直接调用（没有 step）时给 progress 用 */
+  opts.stats = opts.stats || {};
+  const stats = opts.stats;
+  stats.topics = stats.topics || 0;
+  stats.entries = stats.entries || 0;
+  stats.images = stats.images || 0;
+  stats.imageFailed = stats.imageFailed || 0;
+  stats.pins = stats.pins || 0;
+  stats.services = stats.services || 0;
+  stats.failedConvs = stats.failedConvs || 0;
+  stats.failures = stats.failures || [];
   const roots = [];
 
   /* 先把所有话题时间定下来（含分支），再写文件 */
@@ -789,30 +896,34 @@ export async function importAsTopics(parentDir, conversations, source, report, o
     const used = new Set();
     for (const conv of conversations) uniquifyTopicTimes(conv.root, used);
   }
-  const totalConvs = conversations.length;
 
-  let totalImages = 0;
-  for (const conv of conversations) totalImages += countImages(conv.root);
-  const totalWork = totalConvs + totalImages;
-  let doneWork = 0;
+  /* 进度总数：话题 + 月份文件 + 附件（只有选了导出目录才复制） */
+  const work = { topics: 0, months: 0, copies: 0 };
+  for (const conv of conversations) {
+    const w = countWork(conv.root, !!opts.photoDir);
+    work.topics += w.topics;
+    work.months += w.months;
+    work.copies += w.copies;
+  }
+  opts._work = { done: 0, total: work.topics + work.months + work.copies };
 
-  const bump = () => { doneWork++; if (report) report(doneWork, totalWork); };
-  const onImage = () => bump();
-
-  for (let i = 0; i < totalConvs; i++) {
-    const conv = conversations[i];
+  for (const conv of conversations) {
     try {
       const topicIdMap = new Map();
       collectTopicIdMap(conv.root, topicIdMap);
       processReplyHeaders(conv.root, topicIdMap, null);
       const node = await persistRecursive(parentDir, conv.root, {
         source, sourceId: conv.sourceId,
-      }, opts, onImage);
+      }, opts);
       roots.push(node);
     } catch (e) {
       console.error('[import] 对话导入失败:', conv.title, e);
+      stats.failedConvs++;
+      if (stats.failures.length < 20) {
+        stats.failures.push('对话导入失败：' + (conv.title || '未命名') +
+          '（' + ((e && e.message) || e) + '）');
+      }
     }
-    bump();
   }
   return roots;
 }
@@ -1042,6 +1153,53 @@ export async function writeImportFailureReport(parent, err, meta, deps) {
  * @param {File} file
  * @param {{attempts: Array, renderAll: Function, select: Function}} deps
  */
+/* 让浏览器有机会把"操作进行中"画到小灯上，再执行会阻塞主线程的解析 */
+function nextFrame() {
+  return new Promise(resolve => {
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve());
+    else setTimeout(resolve, 0);
+  });
+}
+
+/* 导入结束后的详情对话框。比一句 toast 多显示图片/置顶/服务消息与失败项。 */
+function showImportSummary(ui, stats, meta) {
+  const s = stats || {};
+  const rows = [
+    ['话题', (s.topics || 0) + ' 个'],
+    ['记录', (s.entries || 0) + ' 条'],
+    ['系统消息', (s.services || 0) + ' 条'],
+    ['置顶', (s.pins || 0) + ' 条'],
+  ];
+  if (meta && meta.photoDir) {
+    rows.push(['图片', (s.images || 0) + ' 张' +
+      (s.imageFailed ? '（失败 ' + s.imageFailed + ' 张）' : '')]);
+  } else {
+    rows.push(['图片', '未选择导出目录，未复制']);
+  }
+  if (s.failedConvs) rows.push(['失败对话', s.failedConvs + ' 个']);
+
+  const fails = Array.isArray(s.failures) ? s.failures : [];
+  const list = fails.length
+    ? '<div style="margin-top:10px;font-size:12.5px;line-height:1.7;color:var(--ink2)">' +
+        '<b>失败 / 警告</b><br>' +
+        fails.slice(0, 12).map(x => '· ' + esc(x)).join('<br>') +
+      '</div>'
+    : '<div style="margin-top:10px;font-size:12.5px;color:var(--ink3)">没有失败项</div>';
+
+  const html =
+    '<h3>导入完成</h3>' +
+    '<div class="sub">来源：' + esc(meta && meta.source ? String(meta.source) : '未知') + '</div>' +
+    '<div style="margin-top:12px;font-size:13px;line-height:1.9">' +
+      rows.map(([k, v]) => '<div>' + esc(k) + '：' + esc(v) + '</div>').join('') +
+    '</div>' + list +
+    '<div class="modal-btns"><button class="m-btn" data-ok ' +
+      'style="background:var(--accent);color:#F5F1E4">知道了</button></div>';
+
+  const md = ui.openModal(html, null);
+  const btn = md && md.querySelector('[data-ok]');
+  if (btn) btn.addEventListener('click', () => ui.closeModal());
+}
+
 export async function runImportFile(file, deps) {
   deps = deps || {};
   const attempts = deps.attempts || [];
@@ -1049,21 +1207,65 @@ export async function runImportFile(file, deps) {
   const select = deps.select || (() => {});
   const ui = await import('./ui.js');
   const { openMovePicker } = await import('./ui-topicPicker.js');
-  const { enqueue } = await import('./writer.js');
-  const text = await file.text();
+  const { enqueue, beginBusy, endBusy, setBusyLabel } = await import('./writer.js');
 
+  /* ★ 读文件 + 解析可能很慢（大导出几十 MB）。先点亮小灯并让出一帧，
+     否则用户看到的是"点了导入但完全没反应"。 */
   let conversations = null, source = '', importFn = null;
-  const _warn = console.warn;
-  console.warn = () => {};
-  for (const [src, parseFn, imp] of attempts) {
+  beginBusy('正在解析聊天记录');
+  try {
+    await nextFrame();
+
+    const _warn = console.warn;
+    console.warn = () => {};
     try {
-      conversations = parseFn(text);
-      source = src;
-      importFn = imp;
-      break;
-    } catch (e) {}
+      /* Telegram 导出通常是最大的文件：先用 64KB 头判断格式，
+         命中就直接流式解析，不再把整个文件读成字符串 + JSON 树。 */
+      let head = '';
+      if (file && typeof file.slice === 'function') {
+        try { head = await file.slice(0, 64 * 1024).text(); } catch (e) {}
+      }
+      const looksTg = /^\s*\{/.test(String(head).replace(/^\uFEFF/, '')) &&
+        /"messages"\s*:\s*\[/.test(head) &&
+        /"type"\s*:\s*"(personal_chat|private_group|private_supergroup|public_supergroup|private_channel|public_channel|bot_chat)"/.test(head) &&
+        !/"chats"\s*:\s*\{/.test(head) &&        /* 全账户导出走整文件解析 */
+        !/"mapping"\s*:/.test(head) &&           /* DeepSeek */
+        !/"chat_messages"\s*:/.test(head);       /* Claude */
+      const tg = looksTg
+        ? attempts.find(a => typeof a[3] === 'function')
+        : null;
+
+      if (tg) {
+        try {
+          conversations = await tg[3](file, n =>
+            setBusyLabel('正在解析聊天记录… ' + n.toLocaleString() + ' 条'));
+          source = tg[0];
+          importFn = tg[2];
+        } catch (e) {
+          conversations = null;          /* 流式失败再退回整文件解析 */
+        }
+      }
+
+      if (!conversations) {
+        setBusyLabel('正在读取聊天记录');
+        const text = await file.text();
+        await nextFrame();
+        setBusyLabel('正在解析聊天记录');
+        for (const [src, parseFn, imp] of attempts) {
+          try {
+            conversations = parseFn(text);
+            source = src;
+            importFn = imp;
+            break;
+          } catch (e) {}
+        }
+      }
+    } finally {
+      console.warn = _warn;
+    }
+  } finally {
+    endBusy();
   }
-  console.warn = _warn;
 
   if (!conversations) {
     ui.toast('无法识别的文件格式');
@@ -1092,28 +1294,30 @@ export async function runImportFile(file, deps) {
     if (!parent) { ui.toast('找不到目标话题'); return; }
     try {
       const nodes = [];
-      const r = await enqueue(async (report) => {
-        const created = await importFn(dirOf(parent), conversations, report, { photoDir });
+      const step = fn => enqueue(fn);
+      const stats = {
+        topics: 0, entries: 0, images: 0, imageFailed: 0,
+        pins: 0, services: 0, failedConvs: 0, failures: [],
+      };
+
+      /* 导入的每一步（30 张图 / 一个月文件 / 一个话题）单独入队，
+         中间可以插入用户的保存、编辑等任务。 */
+      beginBusy('正在导入聊天记录');
+      try {
+        const created = await importFn(dirOf(parent), conversations, null, { photoDir, step, stats });
         for (const n of created) { parent.children.push(n); nodes.push(n); }
+        const orderRes = await enqueue(() => writeOrder(parent));
+        if (!orderRes.ok) throw (orderRes.err || new Error('写入顺序文件失败'));
         Store.rebuildIndex();
         resetMeta();
-        await writeOrder(parent);
-      });
-      if (!r.ok) throw (r.err || new Error('磁盘写入失败'));
+      } finally {
+        endBusy();
+      }
       if (!nodes.length) throw new Error('导入任务完成，但没有任何话题被写入（详见控制台）');
 
       renderAll();
       if (nodes[0]) select(nodes[0].id);
-      /* 统计要把分支算进去：分支是作为子话题写进去的，
-         只数 nodes 的 entries 会少报（这个导出样本里 160 条会报成 152）。 */
-      let topicCount = 0, entryCount = 0;
-      const tally = n => {
-        topicCount++;
-        entryCount += n.entries.length;
-        for (const c of n.children || []) tally(c);
-      };
-      for (const n of nodes) tally(n);
-      ui.toast('已导入 ' + topicCount + ' 个话题，共 ' + entryCount + ' 条记录');
+      showImportSummary(ui, stats, { source, photoDir });
       console.log('[import] 识别为', source, '，解析出', conversations.length, '个对话');
     } catch (e) {
       console.error('[import]', e);

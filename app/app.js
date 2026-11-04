@@ -42,7 +42,7 @@ import {
   select, wireTree, viewBack, pushViewState
 } from './tree.js';
 import { renderTree } from './tree-render.js';
-import { initSearch, setQuery } from './search.js';
+import { initSearch, setQuery, searchInTopic } from './search.js';
 import {
   renderEntries, wireEntries,
 } from './entries.js';
@@ -151,10 +151,14 @@ updateNavBackTop();
  * ============================================================ */
 
 $('#searchIcon').innerHTML = I.search;
+$('#topicSearchBtn').innerHTML = I.search + '<span>搜索</span>';
 $('#newRootBtn').innerHTML = I.plus + '<span>新建根话题</span>';
 $('#hamburger').innerHTML = I.menu;
 $('#attachBtn').innerHTML = I.clip;
 $('#sendBtn').innerHTML = I.send;
+
+const topicSearchBtn = $('#topicSearchBtn');
+if (topicSearchBtn) topicSearchBtn.addEventListener('click', () => searchInTopic());
 
 initSearch({
   input: $('#searchInput'),

@@ -34,9 +34,10 @@ import {
 } from './io.js';
 import { clearPendingForNode } from './image.js';
 import { enqueue } from './writer.js';
+import { resetMeta } from './meta-row.js';
 import { Storage } from './storage.js';
 import {
-  toast, openMenu, openMenuAt,
+  toast, openMenu, openMenuAt, toggleMenu, closeMenu,
   closeSide, hasModal, confirmDialog
 } from './ui.js';
 import { openMovePicker, openTopicPicker } from './ui-topicPicker.js';
@@ -202,8 +203,14 @@ async function openTopicFolder(n) {
 }
 
 /* 主视角：选一个成员当作"我"（社交导入的多发送者话题） */
+/* 已注销账号没有真实身份，不能当"我"，从候选里排除 */
+const POV_UNKNOWN = '（已注销账号）';
+function povSenders(n) {
+  return listSenders(n.entries).filter(s => s.name !== POV_UNKNOWN);
+}
+
 function openOwnerPicker(n) {
-  const senders = listSenders(n.entries);
+  const senders = povSenders(n);
   if (!senders.length) { toast('这个话题里没有可选的发送者'); return; }
 
   const items = [{ id: '__none__', title: '不使用主视角', subtitle: '恢复正常显示' }]
@@ -229,11 +236,41 @@ function openOwnerPicker(n) {
   });
 }
 
+/* 开屏静默：启动和全局搜索不读取记录；打开话题时才加载。 */
+function toggleSilent(n) {
+  const on = !n.silent;
+  n.silent = on;
+  if (on) {
+    n.entries = [];
+    n._entriesLoaded = false;
+  }
+  enqueue(async () => {
+    try {
+      await updateTopicMeta(n, { silent: on });
+      if (!on && !n._entriesLoaded) {
+        const { loadSilentTopic } = await import('./loader.js');
+        await loadSilentTopic(n);
+      }
+      Store.rebuildIndex();
+      resetMeta();
+      D.renderAll();
+      toast(on ? '已开启开屏静默' : '已取消开屏静默，记录已加载');
+    } catch (e) {
+      toast('设置静默失败：' + ((e && e.message) || e));
+    }
+  });
+}
+
 function buildTopicMenuItems(n) {
+  const senders = povSenders(n);
+  /* 正常情况按 source 判断；老导入/刚导入还没重扫时 source 可能缺失，
+     只要话题里确实有多个发送者，也允许设置主视角。 */
+  const canPov = n.source === 'telegram' || n.source === 'qq' || senders.length >= 2;
   return [
     { icon: I.plus, label: '新建子话题', fn: () => startCreate(n.id) },
     { icon: I.pen, label: '重命名', fn: () => { Store.ui.renaming = n.id; renderTree(); } },
-    ...((n.source === 'telegram' || n.source === 'qq') && listSenders(n.entries).length ? [{
+    { icon: I.folder, label: n.silent ? '取消开屏静默' : '开屏静默', fn: () => toggleSilent(n) },
+    ...((canPov && senders.length) ? [{
       icon: I.user,
       label: n.owner ? '主视角：' + n.owner : '设置主视角…',
       fn: () => openOwnerPicker(n),
@@ -274,8 +311,14 @@ function buildTopicMenuItems(n) {
   ];
 }
 function topicMenu(anchor, n) {
-  openMenu(anchor, buildTopicMenuItems(n));
+  if (toggleMenu(anchor)) return;
+  /* 菜单从三点按钮右侧展开：x 是菜单左边缘，避免盖住触发按钮。 */
+  const r = anchor.getBoundingClientRect();
+  openMenuAt(r.right + 6, r.bottom + 6, buildTopicMenuItems(n), null, anchor);
 }
+
+/* 滚动层级树时收起菜单，避免菜单跟着旧位置悬空 */
+treeBox.addEventListener('scroll', closeMenu, { passive: true });
 export function startCreate(parentId) {
   const pn = findNode(parentId);
   if (pn && pn.id !== '__root__') Store.collapsed.delete(pOf(pn));

@@ -36,7 +36,7 @@ import assert from 'node:assert/strict';
     removeEventListener() {},
   };
 const { Store } = await import('../store.js');
-const { enqueue, setStatus, markFsReady } = await import('../writer.js');
+const { enqueue, setStatus, markFsReady, beginBusy, endBusy } = await import('../writer.js');
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -167,4 +167,15 @@ test('enqueue：NoModificationAllowedError 触发权限恢复提示', async () =
   await Store.fs.chain;              // pending 在 .finally 里减
   assert.equal(Store.fs.pending, 0);
   Store.setDir(null);
+});
+test('beginBusy / endBusy：外部操作期间 pending 归零也不回已保存', async () => {
+  Store.fs.busyOps = 0;
+  beginBusy('正在解析聊天记录');
+  assert.equal(Store.fs.busyOps, 1);
+  await enqueue(async () => {});
+  await Store.fs.chain;              // pending 在 .finally 里减
+  assert.equal(Store.fs.pending, 0);
+  assert.equal(Store.fs.busyOps, 1, '队列空了但解析还在进行');
+  endBusy();
+  assert.equal(Store.fs.busyOps, 0);
 });

@@ -371,8 +371,9 @@ function renderPoint(p) {
     '<div class="tl-item-head">' +
       '<span class="tl-dot point"></span>' +
       '<span class="tl-item-label">' + esc(p.label || '未命名') + '</span>' +
-      '<span class="tl-item-time">' + fmtDateTime(p.at) + '</span>' +
+      '<span class="tl-item-span">已经过 ' + fmtDuration(p.at, Date.now()) + '</span>' +
     '</div>' +
+    '<div class="tl-item-time">' + fmtDateTime(p.at) + '</div>' +
     '<div class="tl-item-acts">' +
       '<button data-edit-point="' + p.createdAt + '">编辑</button>' +
       '<button data-del-point="' + p.createdAt + '" class="danger">删除</button>' +

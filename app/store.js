@@ -56,7 +56,7 @@ const _state = {
   dataRevision: 0,
   
 
-  fs: { ready: false, chain: Promise.resolve(), pending: 0, hasError: false },
+  fs: { ready: false, chain: Promise.resolve(), pending: 0, hasError: false, busyOps: 0 },
 };
 
 /* ---- 查询 ---- */

@@ -29,14 +29,14 @@ import { initImportPicker, runImportFile } from './import-runtime.js';
 import { parseDeepSeekExport, importDeepSeekAsTopics } from './import-deepseek.js';
 import { parseClaudeExport, importClaudeAsTopics } from './import-claude.js';
 import { parseQwenExport, importQwenAsTopics } from './import-qwen.js';
-import { parseTelegramExport, importTelegramAsTopics } from './import-telegram.js';
+import { parseTelegramExport, parseTelegramStream, importTelegramAsTopics } from './import-telegram.js';
 import { parseQQExport, importQQAsTopics } from './import-qq.js';
 
 const IMPORT_ATTEMPTS = [
   ['deepseek', parseDeepSeekExport, importDeepSeekAsTopics],
   ['claude',   parseClaudeExport,   importClaudeAsTopics],
   ['qwen',     parseQwenExport,     importQwenAsTopics],
-  ['telegram', parseTelegramExport, importTelegramAsTopics],
+  ['telegram', parseTelegramExport, importTelegramAsTopics, parseTelegramStream],
   ['qq',       parseQQExport,       importQQAsTopics],
 ];
 

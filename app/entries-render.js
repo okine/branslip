@@ -106,6 +106,7 @@ export function entryHTML(e, idx, srcNode, foldInfo) {
   const nid = srcNode ? srcNode.id : Store.ui.selectedId;
   const isReply = dialogueEnabled && isReplyMessage(e.text);
   const isRelev = dialogueEnabled && isRelatedMessage(e.text);
+  const isSys = /^:::system\b/.test(e.text);
 
   /* 主视角：话题 owner 的消息右对齐（像“我”），其他人左对齐 */
   const owner = (srcNode && srcNode.owner)
@@ -136,6 +137,7 @@ export function entryHTML(e, idx, srcNode, foldInfo) {
   (isOther ? ' pov-other' : '') +
   (isReply ? ' reply-entry' : '') +
   (isRelev ? ' relevance-entry' : '') +
+  (isSys ? ' sys-row' : '') +
   (lastAdded === e.id ? ' new' : '') +
   '" data-eid="' + e.id + '" data-node="' + nid +
   '" data-day="' + dayKeyOfEntry(e) +

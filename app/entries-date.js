@@ -41,12 +41,43 @@ function currentMidDay() {
   return cur;
 }
 
+/* 视口里"最新"的一条记录（按记录顺序取最靠下的可见行）。
+   日期 chip 以前依赖 day-chip，只有日期变化处才有，所以同一天内滚动
+   常常看不到；这里直接读可见行，任何滚动都能给出当前日期。 */
+function latestVisibleEntry() {
+  const sc = $('#entriesScroll');
+  if (!sc) return null;
+  const rows = sc.querySelectorAll('.entry-row[data-eid]');
+  if (!rows.length) return null;
+  const scRect = sc.getBoundingClientRect();
+  let latest = null;
+  for (const row of rows) {
+    const r = row.getBoundingClientRect();
+    if (r.bottom <= scRect.top + 1) continue;   /* 完全在视口上方 */
+    if (r.top >= scRect.bottom) break;          /* 下面的行不用看了 */
+    const hit = Store.entry(row.dataset.eid);
+    if (hit && hit.e) latest = hit.e;
+  }
+  return latest;
+}
+
+function currentDateInfo() {
+  const e = latestVisibleEntry();
+  if (e) {
+    return { day: dayKeyOfEntry(e), text: fmtDay(e.createdAt) };
+  }
+  /* 兜底：没有可见行时（空列表/加载中）仍按日期分隔条定位 */
+  const chip = currentMidDay();
+  if (chip) return { day: chip.dataset.day, text: chip.textContent };
+  return null;
+}
+
 export function updateDateJump() {
   const jump = $('#dateJump'); if (!jump) return;
-  const cur = currentMidDay();
-  if (!cur) { jump.classList.remove('on'); return; }
-  jump.textContent = cur.textContent;
-  jump.dataset.day = cur.dataset.day;
+  const info = currentDateInfo();
+  if (!info) { jump.classList.remove('on'); return; }
+  jump.textContent = info.text;
+  jump.dataset.day = info.day;
   jump.classList.add('on');
   clearTimeout(dateJumpTimer);
   dateJumpTimer = setTimeout(() => jump.classList.remove('on'), 1200);
@@ -71,10 +102,8 @@ export function openDatePicker() {
     .sort((a, b) => dayKeyNum(a[0]) - dayKeyNum(b[0]));
   if (!uniq.length) return;
 
-  const curChip = currentMidDay();
-  const curDay = (curChip && curChip.dataset.day)
-              || $('#dateJump').dataset.day
-              || uniq[uniq.length - 1][0];
+  const curInfo = currentDateInfo();
+  const curDay = (curInfo && curInfo.day) || uniq[uniq.length - 1][0];
 
   const menu = document.createElement('div');
   menu.className = 'date-menu';

@@ -105,6 +105,14 @@ export function preprocess(src, opts) {
     });
   }
 
+  /* ── :::system 服务消息（TG/QQ 导入） ── */
+  if (t.includes(':::system')) {
+    t = t.replace(/^:::system\n([\s\S]*?)\n:::/gm, (m, inner) => {
+      const body = inner.replace(/^\\:::/gm, ':::');
+      return put('<div class="md-system">' + esc(body) + '</div>');
+    });
+  }
+
   /* ── :::sticker 贴纸占位（导出没有文件时的兜底） ── */
   if (t.includes(':::sticker')) {
     t = t.replace(/:::sticker[ \t]*([^\n:]*?)[ \t]*:::/g, (m, emo) =>

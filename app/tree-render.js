@@ -64,7 +64,9 @@ export function branchHTML(n, depth, path) {
         ? '<input class="rename" value="' + esc(n.title) + '">'
         : '<span class="row-title">' + esc(n.title) + '</span>') +
         (n._pending ? '<span class="row-count" title="正在创建">…</span>' : '') +
-      '<span class="row-count">' + (n.entries.length ? countLabel(n.entries.length) : '') + '</span>' +
+      (n.silent
+        ? '<span class="row-count row-silent" title="静默话题：启动和搜索时不加载">' + I.muted + '</span>'
+        : '<span class="row-count">' + (n.entries.length ? countLabel(n.entries.length) : '') + '</span>') +
       '<button class="rbtn" data-act="more" title="更多操作">' + I.dots + '</button>' +
     '</div>' +
     (hasKids ? '<div class="kids-wrap"><div class="kids' + (depth + 1 > 0 ? ' has-line' : '') + '" style="--d:' + (depth + 1) + '">' + kidRows + '</div></div>' : '') +

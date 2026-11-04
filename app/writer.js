@@ -52,6 +52,10 @@ let _progress = null;
 let _activeToken = null;   /* 谁在跑 —— 用来防止过期任务覆盖进度 */
 let _lastError = null;   // 最近一次失败原因，供红灯弹框展示
 
+/* 非队列任务（例如导入前的同步解析）也能点亮左下角小灯。
+   用 busyOps 计数，解析结束/导入结束才回到"已保存"。 */
+let busyLabel = '';
+
 /* 判断 File System Access API 的"权限/只读"类错误 */
 function isPermissionError(err) {
   if (!err) return false;
@@ -164,7 +168,11 @@ export function enqueue(fn) {
       }
       Store.fs.pending--;
       if (Store.fs.pending === 0) {
-        if (!Store.fs.hasError) setStatus('saved', stats());
+        /* 队列空了，但外部操作（解析/导入）还在进行时不能报"已保存" */
+        if (!Store.fs.hasError) {
+          if ((Store.fs.busyOps || 0) > 0) setStatus('saving');
+          else setStatus('saved', stats());
+        }
         Store.fs.chain = Promise.resolve();
       } else {
         setStatus('saving');
@@ -177,6 +185,9 @@ export function enqueue(fn) {
 export function setStatus(s, st) {
   const dot = $('#saveDot'), txt = $('#saveText');
   if (!dot) return;
+
+  /* 外部长操作（解析/导入）没结束时，任何"已保存"都先压成进行中 */
+  if (s === 'saved' && (Store.fs.busyOps || 0) > 0) s = 'saving';
 
   if (s === 'saved') {
     /* ★ 保证 saving 至少显示 MIN_SAVING_MS，避免一闪而过 */
@@ -205,9 +216,11 @@ export function setStatus(s, st) {
     if (!pendingShownAt) pendingShownAt = Date.now();
     const n = Store.fs.pending;
 
-    /* 主文案：有进度就显示"X / Y"，否则退回"写入中" */
+    /* 主文案：外部操作有标签时优先用它；否则有进度显示"X / Y"，再退回"写入中" */
     let text;
-    if (_progress) {
+    if ((Store.fs.busyOps || 0) > 0 && n === 0) {
+      text = (busyLabel || '操作进行中') + '…';
+    } else if (_progress) {
       text = '操作进行中… ' + _progress.done + ' / ' + _progress.total;
       if (n > 1) text += '（+' + (n - 1) + ' 排队）';
     } else {
@@ -234,6 +247,32 @@ export function setStatus(s, st) {
   dot.style.animation = '';
   dot.title = '';
   txt.textContent = '未连接';
+}
+
+/* ---------- 外部长操作（解析导入文件等）的状态 ---------- */
+
+/** 开始一个不经过写队列的长操作；label 直接显示在小灯上。 */
+export function beginBusy(label) {
+  Store.fs.busyOps = (Store.fs.busyOps || 0) + 1;
+  if (label) busyLabel = String(label);
+  setStatus('saving');
+}
+
+/** 更换当前外部操作的文案（例如"读取中"→"解析中"）。 */
+export function setBusyLabel(label) {
+  busyLabel = String(label || '');
+  if ((Store.fs.busyOps || 0) > 0) setStatus('saving');
+}
+
+/** 结束外部长操作；队列空且没有错误时才回到"已保存"。 */
+export function endBusy() {
+  Store.fs.busyOps = Math.max(0, (Store.fs.busyOps || 0) - 1);
+  if (Store.fs.busyOps === 0) busyLabel = '';
+  if (Store.fs.pending === 0) {
+    if (!Store.fs.hasError) setStatus('saved', stats());
+  } else {
+    setStatus('saving');
+  }
 }
 /* ---------- 错误详情 / 复位 ---------- */
 
@@ -319,7 +358,9 @@ let _exitGuardInstalled = false;
 let _exiting = false;
 
 function hasUnsavedWork() {
-  return draftTopicIds().length > 0 || Store.fs.pending > 0;
+  return draftTopicIds().length > 0
+    || Store.fs.pending > 0
+    || (Store.fs.busyOps || 0) > 0;
 }
 
 function unsavedSummary() {
@@ -328,6 +369,7 @@ function unsavedSummary() {
   const bits = [];
   if (d) bits.push(d + ' 个话题里有草稿');
   if (p) bits.push(p + ' 个写入还在排队');
+  if (!p && (Store.fs.busyOps || 0) > 0) bits.push('导入还在进行');
   return bits.join('，');
 }
 

@@ -14,7 +14,7 @@
 
 import { esc, badgeHTML } from './utils.js';
 import { fmtStamp, parseStamp } from './format.js';
-import { IMG_RE } from './md.js';
+import { imageRefs } from './md.js';
 import { pathTitles } from './tree-utils.js';
 import { updateTopicMeta } from './io.js';
 import { enqueue } from './writer.js';
@@ -23,17 +23,29 @@ import { createImageURLLoader, openTopicLightbox } from './image.js';
 
 /* ---------- 收集 ---------- */
 
-function collectImages(node) {
-  const out = [];
+/* 图片和贴纸分开收集：
+   - 图片：普通 ![](attachments/x)
+   - 贴纸：![sticker:emoji](attachments/x)（有文件）或 :::sticker emoji:::（无文件兜底） */
+function collectMedia(node) {
+  const images = [];
+  const stickers = [];
   for (const e of node.entries) {
-    IMG_RE.lastIndex = 0;
-    let m;
-    while ((m = IMG_RE.exec(e.text))) {
-      if (!m[2]) continue;
-      out.push({ path: m[2], alt: m[1] || '', entry: e });
+    for (const r of imageRefs(e.text)) {
+      const alt = r.alt || '';
+      if (alt.startsWith('sticker:')) {
+        stickers.push({ path: r.path, alt, emoji: alt.slice('sticker:'.length), entry: e });
+      } else {
+        images.push({ path: r.path, alt, entry: e });
+      }
+    }
+
+    const re = /:::sticker[ \t]*([^\n:]*?)[ \t]*:::/g;
+    let s;
+    while ((s = re.exec(e.text))) {
+      stickers.push({ noImage: true, emoji: (s[1] || '贴纸').trim(), entry: e });
     }
   }
-  return out;
+  return { images, stickers };
 }
 
 function statHTML(label, value) {
@@ -42,20 +54,64 @@ function statHTML(label, value) {
 
 /* ---------- 渲染 ---------- */
 
-function renderDetails(node, images, introEditing, introDraft) {
+const MEDIA_PAGE = 24;
+
+/* 媒体区：图片 / 贴纸两个横向标签 + 分页（每页 24 个），总数始终显示在标签上 */
+function renderMedia(media, state) {
+  const list = state.tab === 'sticker' ? media.stickers : media.images;
+  const total = list.length;
+  const pages = Math.max(1, Math.ceil(total / MEDIA_PAGE));
+  const page = Math.min(Math.max(0, state.page[state.tab] || 0), pages - 1);
+  state.page[state.tab] = page;
+
+  const slice = list.slice(page * MEDIA_PAGE, (page + 1) * MEDIA_PAGE);
+
+  const tabs =
+    '<div class="topic-media-bar">' +
+      '<div class="topic-media-tabs">' +
+        '<button type="button" class="media-tab' + (state.tab === 'image' ? ' on' : '') +
+          '" data-media-tab="image">图片 · ' + media.images.length + '</button>' +
+        '<button type="button" class="media-tab' + (state.tab === 'sticker' ? ' on' : '') +
+          '" data-media-tab="sticker">贴纸 · ' + media.stickers.length + '</button>' +
+      '</div>' +
+      (pages > 1
+        ? '<div class="topic-media-pager">' +
+            '<button type="button" data-media-page="-1"' + (page === 0 ? ' disabled' : '') +
+              ' aria-label="上一页">‹</button>' +
+            '<span>' + (page + 1) + ' / ' + pages + '</span>' +
+            '<button type="button" data-media-page="1"' + (page === pages - 1 ? ' disabled' : '') +
+              ' aria-label="下一页">›</button>' +
+          '</div>'
+        : '') +
+    '</div>';
+
+  const grid = slice.map((it, i) => {
+    const idx = page * MEDIA_PAGE + i;
+    if (it.noImage) {
+      return '<div class="ti-thumb ti-sticker" title="' + esc(it.emoji || '贴纸') + '">' +
+        esc(it.emoji || '贴纸') + '</div>';
+    }
+    return '<button type="button" class="ti-thumb loading' + (it.emoji ? ' ti-sticker-img' : '') + '"' +
+      ' data-img-path="' + esc(it.path) + '"' +
+      ' data-img-eid="' + esc(it.entry.id) + '"' +
+      ' data-img-idx="' + idx + '"' +
+      ' title="' + esc(it.emoji || it.alt || it.path) + '">' +
+      '<img alt="' + esc(it.emoji || it.alt || '') + '">' +
+    '</button>';
+  }).join('');
+
+  const empty = '<div class="topic-empty">这个话题还没有' +
+    (state.tab === 'sticker' ? '贴纸' : '图片') + '</div>';
+
+  return tabs + (total
+    ? '<div class="topic-media">' + grid + '</div>'
+    : empty);
+}
+
+function renderDetails(node, media, state, introEditing, introDraft) {
   const path = pathTitles(node);
   const created = parseStamp(node.topicId);
   const createdText = Number.isFinite(created) ? fmtStamp(created) : '—';
-
-  const thumbs = images.map((it, i) =>
-    '<button type="button" class="ti-thumb loading"' +
-      ' data-img-path="' + esc(it.path) + '"' +
-      ' data-img-eid="' + esc(it.entry.id) + '"' +
-      ' data-img-idx="' + i + '"' +
-      ' title="' + esc(it.alt || it.path) + '">' +
-      '<img alt="' + esc(it.alt || '') + '">' +
-    '</button>'
-  ).join('');
 
   const intro = (node.intro || '').trim();
   /* 时间精确到秒：去掉 fmtStamp 里的 .mmm 毫秒段 */
@@ -91,7 +147,8 @@ function renderDetails(node, images, introEditing, introDraft) {
     '</div>' +
     '<div class="topic-stats">' +
       statHTML('记录', node.entries.length) +
-      statHTML('图片', images.length) +
+      statHTML('图片', media.images.length) +
+      statHTML('贴纸', media.stickers.length) +
       statHTML('子话题', node.children.length) +
     '</div>' +
     '<div class="topic-card">' +
@@ -106,10 +163,7 @@ function renderDetails(node, images, introEditing, introDraft) {
       '</div>' +
       (introEditing ? introEditor : introView) +
     '</div>' +
-    (images.length
-      ? '<div class="topic-media-head">图片 · ' + images.length + '</div>' +
-        '<div class="topic-media">' + thumbs + '</div>'
-      : '<div class="topic-empty">这个话题还没有图片</div>');
+    renderMedia(media, state);
 }
 
 /* ---------- 缩略图懒加载 ---------- */
@@ -130,7 +184,11 @@ export function openTopicDetails(node) {
   if (!node) { toast('先选择一个话题'); return null; }
   if (!node._dir) { toast('话题还没准备好，请稍候'); return null; }
 
-  const images = collectImages(node);
+  const media = collectMedia(node);
+  const mediaState = {
+    tab: media.images.length ? 'image' : (media.stickers.length ? 'sticker' : 'image'),
+    page: { image: 0, sticker: 0 },
+  };
   const loader = createImageURLLoader(node);
   let thumbIO = null;
 
@@ -245,7 +303,7 @@ export function openTopicDetails(node) {
   const api = openFullPage({
     title: '话题详情',
 
-    render: () => renderDetails(node, images, introEditing, introDraft),
+    render: () => renderDetails(node, media, mediaState, introEditing, introDraft),
 
     afterDraw: (api) => {
       if (thumbIO) { thumbIO.disconnect(); thumbIO = null; }
@@ -268,6 +326,23 @@ export function openTopicDetails(node) {
     },
 
     onEvent: async (ev, api) => {
+      /* 媒体标签：图片 / 贴纸 */
+      const tabBtn = ev.target.closest('[data-media-tab]');
+      if (tabBtn) {
+        const t = tabBtn.dataset.mediaTab;
+        if (t === 'image' || t === 'sticker') { mediaState.tab = t; api.redraw(); }
+        return;
+      }
+
+      /* 媒体分页（每页 24 个） */
+      const pageBtn = ev.target.closest('[data-media-page]');
+      if (pageBtn) {
+        const d = Number(pageBtn.dataset.mediaPage) || 0;
+        mediaState.page[mediaState.tab] = (mediaState.page[mediaState.tab] || 0) + d;
+        api.redraw();
+        return;
+      }
+
       /* 简介：进入编辑 */
       if (ev.target.closest('[data-intro-edit]')) {
         beginIntroEdit(api);
@@ -293,7 +368,7 @@ export function openTopicDetails(node) {
         const path = th.dataset.imgPath;
         const eid = th.dataset.imgEid;
         const entry = node.entries.find(e => e.id === eid)
-          || (images.find(it => it.path === path) || {}).entry;
+          || media.images.concat(media.stickers).find(it => it.path === path)?.entry;
         if (entry) openTopicLightbox(node, entry, path, () => api.close());
         return;
       }

@@ -36,5 +36,6 @@ export const I = {
   user:  svg('<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.5-6 8-6s8 2 8 6"/>', 14),
   info: svg('<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>', 15, 2),
   broom: svg('<path d="M19.5 3.5l1 1-8.2 8.2-1-1 8.2-8.2z"/><path d="M10.8 12.2l-6 4.4a2.6 2.6 0 0 0-.6 3.3l.6 1 3.3-.6 4.4-6-1.7-2.1z"/><path d="M8.5 17.5l2 2"/>', 16, 1.7),
+  muted: svg('<path d="M11 5 6 9H3v6h3l5 4V5z"/><path d="M22 9l-5 5M17 9l5 5"/>', 14, 1.9),
   pinSolid: '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 17v5l-.5-.5L11 17h1zm-4-1.5V9c0-1 .5-2 1.5-2.5V4a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v2.5C15.5 7 16 8 16 9v6.5l1.5 1.5v1h-11v-1L8 15.5z"/></svg>',
 };

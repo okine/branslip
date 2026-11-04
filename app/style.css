@@ -105,6 +105,13 @@ mark{background:#E8D98F;color:inherit;border-radius:2px;padding:0 1px}
 #treeScroll[hidden]{display:none}
 #searchPanel{flex:1;overflow-y:auto;padding:4px 8px 14px}
 #searchPanel[hidden]{display:none}
+.search-scope{position:sticky;top:0;z-index:2;display:flex;gap:4px;padding:8px 6px 7px;
+  background:linear-gradient(var(--paper) 78%,transparent)}
+.search-scope button{font-family:inherit;font-size:11.5px;font-weight:700;color:var(--ink3);
+  padding:4px 10px;border-radius:99px;border:1px solid var(--line-soft);background:var(--white)}
+.search-scope button:hover:not(:disabled){color:var(--accent);border-color:var(--accent)}
+.search-scope button.on{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+.search-scope button:disabled{opacity:.4;cursor:default}
 .res-row.sel{background:var(--accent-soft);box-shadow:inset 0 0 0 1px rgba(22,101,88,.18)}
 .tree{padding-bottom:6px}
 .tree.stagger .branch>.node-row{animation:rowIn .4s both;animation-delay:calc(var(--i)*22ms)}
@@ -138,6 +145,8 @@ mark{background:#E8D98F;color:inherit;border-radius:2px;padding:0 1px}
 .row-title{flex:1;min-width:0;font-size:13.5px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .node-row.selected .row-title{font-weight:700;color:var(--accent-deep)}
 .row-count{font-size:11.5px;color:var(--ink3);margin-right:2px}
+.row-silent{display:inline-flex;align-items:center;color:var(--ink3);opacity:.75}
+.row-silent svg{display:block}
 .rbtn{width:25px;height:25px;flex:none;display:flex;align-items:center;justify-content:center;border-radius:7px;
   color:var(--ink3);opacity:0;transition:opacity .12s}
 .node-row:hover .rbtn,.node-row.selected .rbtn{opacity:1}
@@ -1197,6 +1206,11 @@ label.pick-row input[type=checkbox]{flex:none;accent-color:var(--accent);width:1
 .pp-card .meta{display:block;text-align:right;font-size:10.5px;color:#4E8172;margin-top:4px}
 .pp-acts{display:flex;gap:8px;justify-content:flex-end;padding:7px 0 2px;
   border-top:1px solid rgba(43,38,28,.08);margin-top:6px}
+.pp-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  border-top:1px solid rgba(43,38,28,.08);margin-top:6px;padding-top:7px}
+.pp-foot .pp-acts{flex:1;justify-content:flex-end;padding:0;border:0;margin:0}
+.pp-num{flex:none;font-size:11px;font-weight:700;color:var(--ink3);
+  letter-spacing:.5px;padding-left:2px}
 .pp-acts button{font-size:12px;font-weight:700;padding:5px 12px;border-radius:8px;color:var(--ink2)}
 .pp-acts button:hover{background:rgba(43,38,28,.08)}
 .pp-acts button:last-child:hover{color:var(--danger);background:#F6E7E2}
@@ -1916,4 +1930,57 @@ img.eimg[alt^="sticker:"]{max-width:160px;max-height:160px;width:auto;height:aut
 .entry-row.pov-other .entry{
   border-radius:14px 14px 14px 4px;
   background:var(--paper);
+}
+
+/* ─── 31 服务消息（Telegram / QQ 导入） ───────────────────── */
+.md-system{
+  display:inline-block;max-width:min(680px,86%);
+  padding:4px 12px;border-radius:99px;
+  background:rgba(43,38,28,.045);border:1px solid rgba(43,38,28,.06);
+  color:var(--ink3);font-size:12px;line-height:1.7;
+  text-align:center;white-space:pre-wrap;
+}
+.entry-row.sys-row{justify-content:center}
+.entry-row.sys-row .tools{display:none}
+.entry-row.sys-row .entry{
+  background:transparent;border:0;box-shadow:none;padding:0;
+  max-width:min(720px,90%);
+}
+.entry-row.sys-row .meta-row{opacity:.7;justify-content:center}
+
+/* ─── 30 话题详情：图片 / 贴纸 横向分页 ─────────────────── */
+.topic-media-bar{
+  width:min(720px,94vw);
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  flex-wrap:wrap;
+}
+.topic-media-tabs{display:flex;gap:6px}
+.media-tab{
+  font-size:12px;font-weight:700;letter-spacing:.5px;color:var(--ink3);
+  padding:5px 12px;border-radius:99px;cursor:pointer;
+  background:var(--white);border:1px solid var(--line-soft);
+  font-family:inherit;
+}
+.media-tab:hover{color:var(--accent);border-color:var(--accent)}
+.media-tab.on{
+  color:var(--accent);border-color:var(--accent);
+  background:rgba(22,101,88,.06);
+}
+.topic-media-pager{
+  display:flex;align-items:center;gap:6px;
+  font-size:12px;color:var(--ink3);font-variant-numeric:tabular-nums;
+}
+.topic-media-pager button{
+  width:26px;height:26px;flex:none;display:flex;align-items:center;justify-content:center;
+  border-radius:8px;border:1px solid var(--line-soft);background:var(--white);
+  color:var(--ink2);font-size:15px;line-height:1;cursor:pointer;padding:0;
+}
+.topic-media-pager button:hover:not([disabled]){
+  color:var(--accent);border-color:var(--accent);background:var(--accent-soft);
+}
+.topic-media-pager button[disabled]{opacity:.35;cursor:default}
+/* 没有文件的贴纸：emoji 占位（不可点开灯箱） */
+.ti-thumb.ti-sticker{
+  display:flex;align-items:center;justify-content:center;
+  font-size:34px;line-height:1;background:var(--paper);cursor:default;
 }

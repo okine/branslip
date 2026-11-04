@@ -22,6 +22,7 @@ import {
   monthKeyOfEntry,
 } from './format.js';
 import { nextCreatedAtMs } from './format.js';
+import { imageRefs } from './md.js';
 
 /* ---------- 文件名常量 ---------- */
 export const ENTRY_FILE = '_记录.md';
@@ -51,11 +52,12 @@ export async function findOrphanAttachments(node) {
 
   /* 1. 收集本话题所有 entry 文本里引用的文件名 */
   const used = new Set();
-  const RE = /!\[[^\]]*\]\(\s*attachments\/([^)\s]+)(?:\s+"[^"]*")?\s*\)/g;
   for (const e of node.entries) {
-    RE.lastIndex = 0;
-    let m;
-    while ((m = RE.exec(e.text))) used.add(m[1]);
+    for (const r of imageRefs(e.text)) {
+      if (r.path && r.path.startsWith('attachments/')) {
+        used.add(r.path.slice('attachments/'.length));
+      }
+    }
   }
 
   /* 2. 遍历附件目录，看哪些没被引用 */
