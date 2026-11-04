@@ -293,7 +293,8 @@ export async function openTimeArrow() {
   /* ── 5. 拼 SVG ── */
   let svg = '<svg width="' + LOGICAL_W + '" height="' + H + '" ' +
           'viewBox="0 0 ' + LOGICAL_W + ' ' + H + '" ' +
-          'preserveAspectRatio="none" class="ti-svg">';
+          'preserveAspectRatio="none" class="ti-svg">' +
+          '<g class="ti-layer">';
 
   /* 全局起点 */ //用第一条记录的时间或未来的最早区间起点
   svg += '<circle class="ti-start ti-dot" ' +
@@ -374,7 +375,7 @@ svg += '<text x="' + textX + '" y="' + yMid + '" ' +
 }
   
 
-  svg += '</svg>';
+  svg += '</g></svg>';
 
   /* ── 6. 页面壳（★ 先 innerHTML，再挂 body）── */
   const d = document.createElement('div');
@@ -425,6 +426,8 @@ svg += '<text x="' + textX + '" y="' + yMid + '" ' +
     sc.scrollLeft = (sc.scrollWidth - sc.clientWidth) / 2;
   });
   const sc = d.querySelector('.ti-scroll');
+  const svgEl = sc.querySelector('.ti-svg');
+  let currentW = LOGICAL_W;
 let drag = null;
 
   sc.addEventListener('pointerdown', e => {
@@ -459,6 +462,28 @@ let drag = null;
   });
   let zoom = 1;   // 当前缩放系数，和 SVG 元素尺寸同步
 
+  /* 窗口/容器尺寸变化后：宽度居中、viewBox 跟着变，避免轴心偏在左边。
+     坐标是打开时按旧宽度算的，用 <g> 平移把整张图重新居中。 */
+  let resizeRaf = null;
+  let ro = null;
+  if (typeof ResizeObserver === 'function') {
+    ro = new ResizeObserver(() => {
+      if (resizeRaf) return;
+      resizeRaf = requestAnimationFrame(() => {
+        resizeRaf = null;
+        const w = sc.clientWidth || window.innerWidth;
+        if (!w || w === currentW) return;
+        const dx = (w - currentW) / 2;
+        currentW = w;
+        svgEl.setAttribute('viewBox', '0 0 ' + currentW + ' ' + H);
+        svgEl.setAttribute('width', currentW * zoom);
+        const layer = svgEl.querySelector('.ti-layer');
+        if (layer) layer.setAttribute('transform', 'translate(' + dx + ',0)');
+      });
+    });
+    ro.observe(sc);
+  }
+
 sc.addEventListener('wheel', e => {
   /* 只有按住 Ctrl / Cmd 才缩放 —— 否则保留默认滚动行为 */
   if (!e.ctrlKey && !e.metaKey) return;
@@ -479,8 +504,7 @@ sc.addEventListener('wheel', e => {
   const contentY = (sc.scrollTop + my) / oldZoom;
 
   /* 应用新尺寸 */
-  const svgEl = sc.querySelector('.ti-svg');
-  svgEl.setAttribute('width',  LOGICAL_W * zoom);
+  svgEl.setAttribute('width',  currentW * zoom);
   svgEl.setAttribute('height', H * zoom);
 
   /* 滚动到新位置，让鼠标下的点不动 */
@@ -488,7 +512,11 @@ sc.addEventListener('wheel', e => {
   sc.scrollTop  = contentY * zoom - my;
 }, { passive: false });
     /* ── 9. 关闭 ── */
-  const close = makeEscapable(() => { d.remove(); tip.remove(); });
+  const close = makeEscapable(() => {
+    if (ro) ro.disconnect();
+    if (resizeRaf) cancelAnimationFrame(resizeRaf);
+    d.remove(); tip.remove();
+  });
   d.querySelector('.pp-back').addEventListener('click', close);
 }
 

@@ -25,7 +25,7 @@ import { Store } from './store.js';
 import { renderMDCached, renderTextParts, parseRelevanceHeader, parseAltHeader, stripQuoteHeader, isReplyMessage, isRelatedMessage, parseSenderPrefix } from './md.js';
 
 import { renderMetaRow } from './meta-row.js';
-import { dayKey, fmtDay, dayKeyOfEntry } from './format.js';
+import { dayKey, fmtDay, fmtDayOfEntry, fmtTimeOfEntry, dayKeyOfEntry } from './format.js';
 /* ---------- 模块级状态 ---------- */
 
 let dialogueEnabled = true;
@@ -158,7 +158,7 @@ export function entryHTML(e, idx, srcNode, foldInfo) {
 export function dayChipHTML(ts, idx, entry) {
   /* 有条目就按条目自己的时区算日期，和它头上的 ## 行保持一致 */
   return '<div class="day-chip" data-day="' + (entry ? dayKeyOfEntry(entry) : dayKey(ts)) +
-         '" style="--i:' + idx + '">' + fmtDay(ts) + '</div>';
+         '" style="--i:' + idx + '">' + (entry ? fmtDayOfEntry(entry) : fmtDay(ts)) + '</div>';
 }
 
 /* day-chip + 完整一行 */
@@ -228,6 +228,7 @@ export function setAltVersion(row, idx) {
   bodies.forEach((b, k) => { b.hidden = (k !== i); });
   const pos = row.querySelector('.alt-pos b');
   if (pos) pos.textContent = String(i + 1);
+  if (bodies[i].dataset.altDay) row.dataset.day = bodies[i].dataset.altDay;
   const t = row.querySelector('.alt-time');
   if (t) t.textContent = bodies[i].dataset.altTime || '';
   const anchor = row.dataset.altAnchor;
@@ -238,12 +239,6 @@ export function setAltVersion(row, idx) {
 /* 变体行：同一条消息的 N 个版本共用一行，只显示一个，其余藏在翻页里。
    每个版本用 entryInnerHTML 渲染（带各自的 `.entry` 气泡和 meta 行），
    翻页条放在消息下方，右侧显示当前版本时间。 */
-/* HH:mm:ss —— 翻页条上的版本时间要能区分同一分钟内的两个版本 */
-function hms(ts) {
-  const d = new Date(ts), p = n => String(n).padStart(2, '0');
-  return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
-}
-
 export function altRowHTML(anchor, variants, idx, node, active) {
   const versions = [anchor, ...variants];
   const act = Math.max(0, Math.min(active || 0, versions.length - 1));
@@ -257,7 +252,8 @@ export function altRowHTML(anchor, variants, idx, node, active) {
   const bodies = versions.map((v, i) =>
     '<div class="alt-body" data-alt-body="' + i + '"' +
       ' data-alt-eid="' + esc(v.id) + '"' +
-      ' data-alt-time="' + esc(hms(v.createdAt)) + '"' +
+      ' data-alt-time="' + esc(fmtTimeOfEntry(v)) + '"' +
+      ' data-alt-day="' + esc(dayKeyOfEntry(v)) + '"' +
       (i === act ? '' : ' hidden') + '>' +
       '<div class="alt-line">' + toolHTML + entryInnerHTML(v, node) + '</div>' +
     '</div>'
@@ -267,7 +263,7 @@ export function altRowHTML(anchor, variants, idx, node, active) {
     '<button type="button" class="alt-nav" data-alt-nav="-1" title="上一版">‹</button>' +
     '<span class="alt-pos"><b>' + (act + 1) + '</b> / ' + versions.length + '</span>' +
     '<button type="button" class="alt-nav" data-alt-nav="1" title="下一版">›</button>' +
-    '<span class="alt-time">' + esc(hms(versions[act].createdAt)) + '</span>' +
+    '<span class="alt-time">' + esc(fmtTimeOfEntry(versions[act])) + '</span>' +
   '</div>';
 
   const replyCls = (dialogueEnabled && isReplyMessage(anchor.text)) ? ' reply-entry' : '';

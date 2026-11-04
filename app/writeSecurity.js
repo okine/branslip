@@ -25,7 +25,12 @@ export const TMP_TRAILER = '\n<<<SZJ-EOF>>>\n';
 
 /* ★ 新增：清洗不完整的 UTF-16 代理项，避免转 UTF-8 时被浏览器替换成 U+FFFD 导致校验失败 */
 function sanitizeUTF8(str) {
-  return String(str).replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD');
+  /* 不用 lookbehind：旧 Safari / 部分 Android WebView 会让整个模块解析失败。
+     先保留成对的代理项，再单独替换孤立的代理码元。 */
+  return String(str).replace(
+    /[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDBFF]|[\uDC00-\uDFFF]/g,
+    m => m.length === 2 ? m : '\uFFFD'
+  );
 }
 
 /**

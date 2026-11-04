@@ -183,6 +183,19 @@ function fmtTime(ts) {
          String(d.getMinutes()).padStart(2, '0');
 }
 
+/* 按条目自己的时区格式化 HH:mm:ss —— 变体翻页条用 */
+function fmtTimeOfEntry(e) {
+  const off = entryTzOffset(e);
+  const d = new Date(e.createdAt + off * 60000);
+  const p = n => String(n).padStart(2, '0');
+  return p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()) + ':' + p(d.getUTCSeconds());
+}
+
+/* 按条目自己的时区显示日期（今天/昨天/几月几日） */
+function fmtDayOfEntry(e) {
+  return fmtDay(e.createdAt + entryTzOffset(e) * 60000);
+}
+
 /* 完整中文日期时间 —— 用于「编辑于 ...」的 tooltip */
 function fmtFull(ts) {
   const d = new Date(ts), p = n => String(n).padStart(2, '0');
@@ -343,6 +356,8 @@ export {
   /* 条目级（按条目自己的时区归属）—— 写入月文件 / 日期分组必须用这两个 */
   monthKeyOfEntry,
   dayKeyOfEntry,
+  fmtDayOfEntry,
+  fmtTimeOfEntry,
   entryTzOffset,
   monthFileName,
   MONTH_RE,

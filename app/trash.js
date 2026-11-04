@@ -150,14 +150,22 @@ export async function openTrashPage() {
         });
 
         if (!r.ok) {
-          dirs.length = 0;
+          /* 失败时不要清空 dirs：磁盘上没删掉的东西要留在列表里。 */
+          try {
+            const fresh = await readTrashDirs();
+            dirs.length = 0; dirs.push(...fresh);
+          } catch (e) {}
           redraw();
           toast('清空回收站失败：' + ((r.err && r.err.message) || r.err || '未知错误'));
           return;
         }
 
         arr.length = 0;
-        dirs.length = 0;
+        /* 部分目录删除失败时也要反映真实剩余，不能假装清空。 */
+        try {
+          const fresh = await readTrashDirs();
+          dirs.length = 0; dirs.push(...fresh);
+        } catch (e) { dirs.length = 0; }
         redraw();
 
         if (dirErr) {

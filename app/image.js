@@ -80,7 +80,13 @@ resetImgObserver();   // 首次建立
     const path = img.dataset.src;
     if (!path) return;
     const url = await getImageURL(node, path);
-    if (url === CACHE_CLEARED) return;
+    if (url === CACHE_CLEARED) {
+      /* 缓存加载期间被清空：观察器已经 unobserve 了，必须重新挂回去，
+         否则这张图会永远停在无 src、也不被观察的状态。 */
+      hydratedSet.delete(img);
+      imgObserver.observe(img);
+      return;
+    }
     if (url) {
       img.src = url;
       img.classList.add('ok');

@@ -195,6 +195,11 @@ export class ZipWriter {
     const { dt, tm } = dosDateTime(new Date((blob && blob.lastModified) || Date.now()));
     const startOffset = this.offset;
 
+    /* 已知大小的文件在写任何字节前就拒绝，避免留下半截归档 */
+    if (Number.isFinite(blob && blob.size) && blob.size > U32_MAX) {
+      throw new Error('单个文件超过 4 GB，暂不支持：' + name);
+    }
+
     /* 本地头：CRC/大小先写 0，真正的写在 data descriptor 里 */
     const local = new Uint8Array(30 + nameBytes.length);
     const dv = new DataView(local.buffer);
@@ -437,8 +442,10 @@ export async function exportZipTo(sink, rootDir, opts) {
         if (typeof opts.onProgress === 'function') {
           try { opts.onProgress({ files, bytes, current: fullPath }); } catch (e) {}
         }
-        /* 每个文件之间让出一次事件循环：界面能刷新，也能显示进度 */
-        await Promise.resolve();
+        /* 每 25 个文件让出一次宏任务：microtask 不会让浏览器重绘 */
+        if (files % 25 === 0) {
+          await new Promise(resolve => setTimeout(resolve, 0));
+        }
       } else if (it.kind === 'directory') {
         let sub = null;
         try {
@@ -474,6 +481,15 @@ function zipFileName() {
 }
 
 function mb(bytes) { return (bytes / 1048576).toFixed(1) + ' MB'; }
+
+function showExportError(e) {
+  let msg = '导出失败：' + ((e && e.message) || e || '未知错误');
+  if (e && e.name === 'InvalidStateError') {
+    msg += '\n提示：目标文件被其他程序改动，或保存位置就在笔记文件夹里。' +
+      '\n换一个保存位置（比如桌面）再试一次。';
+  }
+  toast(msg);
+}
 
 export async function exportZipFlow(btn) {
   if (!Store.fs.ready) { toast('尚未连接文件夹'); return; }
@@ -544,7 +560,7 @@ export async function exportZipFlow(btn) {
 
   if (btn) btn.disabled = true;
   try {
-    await enqueue(async report => {
+    const res = await enqueue(async report => {
       /* 进度沿用 writer 的 report(done,total)：左下角状态栏显示"操作进行中… X / Y"。
          先只数一遍文件（不读内容）拿到总数，再边写边报。 */
       let totalFiles = 0;
@@ -587,13 +603,12 @@ export async function exportZipFlow(btn) {
       }
       toast(msg);
     });
-  } catch (e) {
-    let msg = '导出失败：' + ((e && e.message) || e);
-    if (e && e.name === 'InvalidStateError') {
-      msg += '\n提示：目标文件被其他程序改动，或保存位置就在笔记文件夹里。' +
-        '\n换一个保存位置（比如桌面）再试一次。';
+    if (!res.ok) {
+      showExportError(res.err);
+      return;
     }
-    toast(msg);
+  } catch (e) {
+    showExportError(e);
   } finally {
     if (btn) btn.disabled = false;
   }

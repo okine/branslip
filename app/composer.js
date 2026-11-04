@@ -15,7 +15,7 @@
 import { Storage } from './storage.js';
 import { $, esc, uid } from './utils.js';
 import { I } from './icons.js';
-import { Store } from './store.js';
+import { Store, draftTopicIds } from './store.js';
 import { Mutate } from './mutate.js';
 import { imgStamp,stampForWrite, nextCreatedAtMs, CLOCK_DRIFT_THRESHOLD } from './format.js';
 import { buildRef, stripQuoteHeader, imageRefs } from './md.js';
@@ -246,7 +246,9 @@ export function buildEntryText(v, n, reply, relev) {
   return v;
 }
 
-function send() {
+let sending = false;
+async function send() {
+  if (sending) return;
   if (Store.ui.merged) {
     toast('时间流视图下不能直接写记录，请先选一个话题');
     return;
@@ -254,6 +256,8 @@ function send() {
   const n = findNode(Store.ui.selectedId); if (!n) return;
   if (n._pending) { toast('话题正在创建中，请稍候…'); return; }
   const v = ta.value.trim(); if (!v) return;
+
+  sending = true;
   try {
     const text = buildEntryText(v, n, replyTo, relevanceTo);
     const e = Store.addEntry(n, { id: uid(), text, createdAt: nextCreatedAt(n) });
@@ -262,15 +266,28 @@ function send() {
     const tzBid = Mutate.entryBlockId(e);
     e._writeStamp = stampForWrite(e);               // 冻结，与 format.stampForWrite 一致
     Store.reindexEntry(e, n, [addBid, tzBid]);       // blockId 可能因时区/_writeStamp 变化
-    
+
     setRelevance(null);
     setReply(null);
     flushPendingImages(n, text);
-    enqueue(() => appendMonthEntry(n, e));
+
+    /* 写盘成功后才算发送成功；失败时把内存里的 entry 回滚。 */
+    const r = await enqueue(() => appendMonthEntry(n, e));
+    if (!r.ok) {
+      Store.removeEntry(n, e.id);
+      updateTopCount();
+      ta.value = v;
+      autoGrow();
+      Store.ui.drafts.set(n.id, v);
+      toast('发送失败，已恢复到输入框：' +
+        ((r.err && r.err.message) || r.err || '磁盘写入失败'));
+      return;
+    }
+
     ta.value = '';
     ta.style.height = 'auto';
     refreshPreview();
-    /* ★ 新增：发送成功，清掉该话题的草稿 */
+    /* 发送成功，清掉该话题的草稿 */
     const curId = Store.ui.selectedId;
     if (curId) Store.ui.drafts.delete(curId);
     appendEntry(n, e);
@@ -280,6 +297,8 @@ function send() {
     console.error('[send] 出错', err);
     toast('发送失败：' + (err.message || err));
     D.renderAll();
+  } finally {
+    sending = false;
   }
 }
 
@@ -556,7 +575,7 @@ window.addEventListener('drop', e => {
  * ============================================================ */
 
 window.addEventListener('beforeunload', e => {
-  const draftCount = Store.ui.drafts.size + ((ta && ta.value.trim()) ? 1 : 0);
+  const draftCount = draftTopicIds().length;
   const editing = !!(Store.ui.editingEntry || Store.ui.renaming || Store.ui.creatingParent);
   const busy = Store.fs.pending > 0;
   if (!draftCount && !editing && !busy) return;
