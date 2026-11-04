@@ -31,7 +31,7 @@ import {
 import { clearRuntimeCaches } from './cacheClear.js';
 import { resetMeta } from './meta-row.js';
 import { 
-  toast, runTopEsc, confirmDialog
+  toast, runTopEsc, confirmDialog, openSide, openMenuAt, toggleMenu
 } from './ui.js';
 import { scanChildren, rescanFromDisk, wireLoader } from './loader.js';
 import { enqueue, waitForIdle, installExitGuard } from './writer.js';
@@ -84,6 +84,11 @@ initFixedButtons({
  * 主区编排
  * ============================================================ */
 
+function isNarrow() {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' &&
+    window.matchMedia('(max-width: 860px)').matches;
+}
+
 function renderTop() {
   const cr = $('#crumbs');
 
@@ -102,12 +107,42 @@ function renderTop() {
     return;
   }
   const p = pathOf(n);
-  cr.innerHTML = p.map((x, i) =>
-    '<button class="crumb' + (i === p.length - 1 ? ' cur' : '') +
-    '" data-crumb="' + x.id + '">' + esc(x.title) + '</button>'
-  ).join('<span class="sep">›</span>');
+  if (isNarrow()) {
+    /* 手机上不铺整条路径：只显示本话题名 + 下拉尖角 */
+    cr.innerHTML = '<button class="crumb cur crumb-drop" data-crumb-menu="1" title="切换话题路径">' +
+      esc(n.title) + I.chevDown + '</button>';
+  } else {
+    cr.innerHTML = p.map((x, i) =>
+      '<button class="crumb' + (i === p.length - 1 ? ' cur' : '') +
+      '" data-crumb="' + x.id + '">' + esc(x.title) + '</button>'
+    ).join('<span class="sep">›</span>');
+  }
   $('#topCount').textContent = n.entries.length + ' 条记录';
 }
+
+$('#crumbs').addEventListener('click', ev => {
+  const btn = ev.target.closest('[data-crumb-menu]');
+  if (!btn) return;
+  if (toggleMenu(btn)) return;
+  const n = findNode(Store.ui.selectedId);
+  if (!n) return;
+  const items = pathOf(n).map((x, i) => ({
+    icon: i ? I.chev : '',       /* 用尖角表示层级路径 */
+    label: x.title,
+    fn: () => select(x.id),
+  }));
+  const r = btn.getBoundingClientRect();
+  openMenuAt(r.left, r.bottom + 6, items, null, btn);
+});
+
+let topResizeRaf = null;
+window.addEventListener('resize', () => {
+  if (topResizeRaf) return;
+  topResizeRaf = requestAnimationFrame(() => {
+    topResizeRaf = null;
+    renderTop();
+  });
+});
 
 function updateComposer() {
   const merged = !!Store.ui.merged;
@@ -158,7 +193,10 @@ $('#attachBtn').innerHTML = I.clip;
 $('#sendBtn').innerHTML = I.send;
 
 const topicSearchBtn = $('#topicSearchBtn');
-if (topicSearchBtn) topicSearchBtn.addEventListener('click', () => searchInTopic());
+if (topicSearchBtn) topicSearchBtn.addEventListener('click', () => {
+  openSide();          // 手机上先把侧栏抽屉打开，搜索框才可见
+  searchInTopic();
+});
 
 initSearch({
   input: $('#searchInput'),

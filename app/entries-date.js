@@ -19,7 +19,8 @@ import { openCalendarPicker } from './calendar.js';
 import { openTimelinePanel } from './timeline.js';
 import { readTimeline } from './io.js';
 import { jumpToRow } from './entries-jump.js';
-import { dayKey, dayKeyNum, fmtDay, dayKeyOfEntry } from './format.js';
+import { dayKey, dayKeyNum, fmtDay, fmtDayOfEntry, fmtTimeOfEntry, dayKeyOfEntry } from './format.js';
+import { isReplyMessage, stripQuoteHeader, stripImages } from './md.js';
 
 let dateJumpTimer = null;
 let dateMenuClose = null;
@@ -83,7 +84,67 @@ export function updateDateJump() {
   dateJumpTimer = setTimeout(() => jump.classList.remove('on'), 1200);
 }
 
-/* ---------- 打开日期菜单 ---------- */
+/* ---------- 打开日期菜单 / 对话导航 ---------- */
+
+const AI_SOURCES = new Set(['deepseek', 'claude', 'qwen', 'gemini', 'chatgpt', 'openai']);
+let navTab = 'date';
+
+function isAiTopic(n) {
+  return AI_SOURCES.has(String((n && n.source) || ''));
+}
+
+/* LLM 对话的“对话列表”= 用户提问节点；assistant 回复带引用头，直接跳过。 */
+function conversationItems(n) {
+  const out = [];
+  if (!n) return out;
+  for (const e of n.entries) {
+    const text = String(e.text || '');
+    if (!text.trim() || text.startsWith(':::system')) continue;
+    if (isReplyMessage(text)) continue;
+    const preview = stripQuoteHeader(stripImages(text)).replace(/\s+/g, ' ').trim();
+    if (!preview) continue;
+    const chars = Array.from(preview);
+    const cut = chars.length > 10 ? chars.slice(0, 10).join('') + '…' : preview;
+    out.push({ e, preview: cut });
+  }
+  return out;
+}
+
+function currentChatEntry(items) {
+  const visible = latestVisibleEntry();
+  if (!visible) return null;
+  let best = null;
+  for (const it of items) {
+    if (it.e.createdAt <= visible.createdAt) best = it;
+    else break;
+  }
+  return best;
+}
+
+function dateBodyHTML(uniq, curDay) {
+  return uniq.map(([d, t]) =>
+    '<button type="button" data-day="' + d + '"' +
+      (d === curDay ? ' class="cur"' : '') + '>' + esc(t) + '</button>'
+  ).join('');
+}
+
+function chatBodyHTML(items, activeId) {
+  if (!items.length) return '<div class="hint">这个话题还没有可列出的对话</div>';
+  const shown = items.slice(0, 500);
+  let h = shown.map(it =>
+    '<button type="button" class="date-chat-item' +
+      (it.e.id === activeId ? ' cur' : '') +
+      '" data-eid="' + esc(it.e.id) + '">' +
+      '<span class="date-chat-preview">' + esc(it.preview) + '</span>' +
+      '<span class="date-chat-time">' +
+        esc(fmtDayOfEntry(it.e)) + ' ' + esc(fmtTimeOfEntry(it.e)) +
+      '</span></button>'
+  ).join('');
+  if (items.length > shown.length) {
+    h += '<div class="hint">只显示前 ' + shown.length + ' 条，共 ' + items.length + ' 条</div>';
+  }
+  return h;
+}
 
 export function openDatePicker() {
   const sc = $('#entriesScroll');
@@ -96,7 +157,7 @@ export function openDatePicker() {
   const dayMap = new Map();
   for (const e of n.entries) {
     const k = dayKeyOfEntry(e);
-    if (!dayMap.has(k)) dayMap.set(k, fmtDay(e.createdAt));
+    if (!dayMap.has(k)) dayMap.set(k, fmtDayOfEntry(e));
   }
   const uniq = [...dayMap.entries()]
     .sort((a, b) => dayKeyNum(a[0]) - dayKeyNum(b[0]));
@@ -104,6 +165,12 @@ export function openDatePicker() {
 
   const curInfo = currentDateInfo();
   const curDay = (curInfo && curInfo.day) || uniq[uniq.length - 1][0];
+  const showChat = isAiTopic(n);
+  const chat = showChat ? conversationItems(n) : [];
+  if (showChat && navTab === 'chat') {
+    const active = currentChatEntry(chat);
+    if (active) navTab = 'chat';
+  }
 
   const menu = document.createElement('div');
   menu.className = 'date-menu';
@@ -111,12 +178,15 @@ export function openDatePicker() {
     '<div class="date-menu-head">' +
       '<button type="button" data-open-calendar>📅 选择日期</button>' +
     '</div>' +
-    '<div class="date-menu-body">' +
-      uniq.map(([d, t]) =>
-        '<button type="button" data-day="' + d + '"' +
-          (d === curDay ? ' class="cur"' : '') + '>' + esc(t) + '</button>'
-      ).join('') +
-    '</div>';
+    (showChat
+      ? '<div class="date-menu-tabs">' +
+          '<button type="button" data-nav-tab="date"' +
+            (navTab === 'date' ? ' class="on"' : '') + '>日期</button>' +
+          '<button type="button" data-nav-tab="chat"' +
+            (navTab === 'chat' ? ' class="on"' : '') + '>对话</button>' +
+        '</div>'
+      : '') +
+    '<div class="date-menu-body"></div>';
   document.body.appendChild(menu);
 
   const ac = new AbortController();
@@ -127,19 +197,48 @@ export function openDatePicker() {
   });
   dateMenuClose = close;
 
-  /* 滚动区定位到当前日期 */
   const body = menu.querySelector('.date-menu-body');
-  const curBtn = body.querySelector('.cur');
-  if (curBtn) {
-    body.scrollTop = Math.max(0,
-      curBtn.offsetTop - body.clientHeight / 2 + curBtn.offsetHeight / 2);
-  }
+  const renderBody = () => {
+    if (showChat && navTab === 'chat') {
+      const active = currentChatEntry(chat);
+      body.innerHTML = chatBodyHTML(chat, active && active.e.id);
+      const cur = body.querySelector('.cur');
+      if (cur) body.scrollTop = Math.max(0, cur.offsetTop - body.clientHeight / 2 + cur.offsetHeight / 2);
+    } else {
+      body.innerHTML = dateBodyHTML(uniq, curDay);
+      const cur = body.querySelector('.cur');
+      if (cur) body.scrollTop = Math.max(0, cur.offsetTop - body.clientHeight / 2 + cur.offsetHeight / 2);
+    }
+  };
+
+  /* 先按日期列表量一次宽度并锁死：切到“对话”时面板不再变宽。 */
+  body.innerHTML = dateBodyHTML(uniq, curDay);
+  const dateWidth = Math.ceil(menu.getBoundingClientRect().width);
+  if (dateWidth) menu.style.width = dateWidth + 'px';
+  renderBody();
+
+  /* tab 切换 */
+  menu.querySelectorAll('[data-nav-tab]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const t = btn.dataset.navTab;
+      if (t !== 'date' && t !== 'chat') return;
+      navTab = t;
+      menu.querySelectorAll('[data-nav-tab]').forEach(b =>
+        b.classList.toggle('on', b.dataset.navTab === t));
+      renderBody();
+    });
+  });
 
   /* 列表点击 → 跳转 */
   body.addEventListener('click', ev => {
-    const b = ev.target.closest('[data-day]'); if (!b) return;
-    close();
-    jumpToDay(sc, b.dataset.day);
+    const day = ev.target.closest('[data-day]');
+    if (day) { close(); jumpToDay(sc, day.dataset.day); return; }
+    const chatItem = ev.target.closest('[data-eid]');
+    if (chatItem) {
+      const eid = chatItem.dataset.eid;
+      close();
+      jumpToRow(n, eid);
+    }
   });
 
   /* "选择日期"按钮 → 系统日期选择器 */

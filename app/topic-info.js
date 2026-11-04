@@ -54,17 +54,11 @@ function statHTML(label, value) {
 
 /* ---------- 渲染 ---------- */
 
-const MEDIA_PAGE = 24;
-
-/* 媒体区：图片 / 贴纸两个横向标签 + 分页（每页 24 个），总数始终显示在标签上 */
+/* 媒体区：图片 / 贴纸两个横向标签，全部展示，不再分页 */
 function renderMedia(media, state) {
   const list = state.tab === 'sticker' ? media.stickers : media.images;
   const total = list.length;
-  const pages = Math.max(1, Math.ceil(total / MEDIA_PAGE));
-  const page = Math.min(Math.max(0, state.page[state.tab] || 0), pages - 1);
-  state.page[state.tab] = page;
-
-  const slice = list.slice(page * MEDIA_PAGE, (page + 1) * MEDIA_PAGE);
+  const slice = list;
 
   const tabs =
     '<div class="topic-media-bar">' +
@@ -74,19 +68,10 @@ function renderMedia(media, state) {
         '<button type="button" class="media-tab' + (state.tab === 'sticker' ? ' on' : '') +
           '" data-media-tab="sticker">贴纸 · ' + media.stickers.length + '</button>' +
       '</div>' +
-      (pages > 1
-        ? '<div class="topic-media-pager">' +
-            '<button type="button" data-media-page="-1"' + (page === 0 ? ' disabled' : '') +
-              ' aria-label="上一页">‹</button>' +
-            '<span>' + (page + 1) + ' / ' + pages + '</span>' +
-            '<button type="button" data-media-page="1"' + (page === pages - 1 ? ' disabled' : '') +
-              ' aria-label="下一页">›</button>' +
-          '</div>'
-        : '') +
     '</div>';
 
   const grid = slice.map((it, i) => {
-    const idx = page * MEDIA_PAGE + i;
+    const idx = i;
     if (it.noImage) {
       return '<div class="ti-thumb ti-sticker" title="' + esc(it.emoji || '贴纸') + '">' +
         esc(it.emoji || '贴纸') + '</div>';
@@ -187,7 +172,6 @@ export function openTopicDetails(node) {
   const media = collectMedia(node);
   const mediaState = {
     tab: media.images.length ? 'image' : (media.stickers.length ? 'sticker' : 'image'),
-    page: { image: 0, sticker: 0 },
   };
   const loader = createImageURLLoader(node);
   let thumbIO = null;
@@ -331,15 +315,6 @@ export function openTopicDetails(node) {
       if (tabBtn) {
         const t = tabBtn.dataset.mediaTab;
         if (t === 'image' || t === 'sticker') { mediaState.tab = t; api.redraw(); }
-        return;
-      }
-
-      /* 媒体分页（每页 24 个） */
-      const pageBtn = ev.target.closest('[data-media-page]');
-      if (pageBtn) {
-        const d = Number(pageBtn.dataset.mediaPage) || 0;
-        mediaState.page[mediaState.tab] = (mediaState.page[mediaState.tab] || 0) + d;
-        api.redraw();
         return;
       }
 

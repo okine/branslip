@@ -309,9 +309,10 @@ function runQuery() {
   }
 
   topics.sort((a, b) => b.score - a.score);
+  /* 记录结果按时间倒序（最新在前），不再按相关度打乱时间感。 */
   entries.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
-    return b.doc.e.createdAt - a.doc.e.createdAt;
+    const d = b.doc.e.createdAt - a.doc.e.createdAt;
+    return d || String(b.doc.e.id).localeCompare(String(a.doc.e.id));
   });
 
   state.topics = topics;

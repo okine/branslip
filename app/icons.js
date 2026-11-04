@@ -10,6 +10,7 @@ const svg = (p, s = 16, w = 1.8) =>
 
 export const I = {
   chev:  svg('<polyline points="9 6 15 12 9 18"/>', 14, 2),
+  chevDown: svg('<polyline points="6 9 12 15 18 9"/>', 14, 2),
   plus:  svg('<path d="M12 5v14M5 12h14"/>', 14, 2),
   dots:  '<svg aria-hidden="true" focusable="false" width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.9"/><circle cx="12" cy="12" r="1.9"/><circle cx="19" cy="12" r="1.9"/></svg>',
   drag:  '<svg aria-hidden="true" focusable="false" width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="5" r="1.7"/><circle cx="15" cy="5" r="1.7"/><circle cx="9" cy="12" r="1.7"/><circle cx="15" cy="12" r="1.7"/><circle cx="9" cy="19" r="1.7"/><circle cx="15" cy="19" r="1.7"/></svg>',

@@ -191,9 +191,24 @@ function fmtTimeOfEntry(e) {
   return p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()) + ':' + p(d.getUTCSeconds());
 }
 
-/* 按条目自己的时区显示日期（今天/昨天/几月几日） */
+/* 按条目自己的时区显示日期（今天/昨天/几月几日）。
+   注意不能用 fmtDay(createdAt + offset)：fmtDay 取本地字段，
+   会在设备时区与条目时区不同时再加一次本地偏移。 */
 function fmtDayOfEntry(e) {
-  return fmtDay(e.createdAt + entryTzOffset(e) * 60000);
+  const off = entryTzOffset(e);
+  const d = new Date(e.createdAt + off * 60000);
+  const y = d.getUTCFullYear(), m = d.getUTCMonth(), day = d.getUTCDate();
+  const wd = '日一二三四五六'[d.getUTCDay()];
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const diff = Math.round(
+    (Date.UTC(y, m, day) - Date.UTC(today.getFullYear(), today.getMonth(), today.getDate())) / 864e5
+  );
+  if (diff === 0) return '今天';
+  if (diff === -1) return '昨天';
+  let out = (m + 1) + '月' + day + '日 周' + wd;
+  if (y !== today.getFullYear()) out = y + '年 ' + out;
+  return out;
 }
 
 /* 完整中文日期时间 —— 用于「编辑于 ...」的 tooltip */
