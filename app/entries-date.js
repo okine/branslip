@@ -20,7 +20,7 @@ import { openTimelinePanel } from './timeline.js';
 import { readTimeline } from './io.js';
 import { jumpToRow } from './entries-jump.js';
 import { dayKey, dayKeyNum, fmtDay, fmtDayOfEntry, fmtTimeOfEntry, dayKeyOfEntry } from './format.js';
-import { isReplyMessage, stripQuoteHeader, stripImages } from './md.js';
+import { isReplyMessage, parseAltHeader, stripQuoteHeader, stripImages } from './md.js';
 
 let dateJumpTimer = null;
 let dateMenuClose = null;
@@ -100,12 +100,13 @@ function conversationItems(n) {
   for (const e of n.entries) {
     const text = String(e.text || '');
     if (!text.trim() || text.startsWith(':::system')) continue;
-    if (isReplyMessage(text)) continue;
+    if (isReplyMessage(text) || parseAltHeader(text)) continue;
     const preview = stripQuoteHeader(stripImages(text)).replace(/\s+/g, ' ').trim();
     if (!preview) continue;
     const chars = Array.from(preview);
-    const cut = chars.length > 10 ? chars.slice(0, 10).join('') + '…' : preview;
-    out.push({ e, preview: cut });
+    const short = chars.length > 10 ? chars.slice(0, 10).join('') + '…' : preview;
+    const tip = chars.length > 20 ? chars.slice(0, 20).join('') + '…' : preview;
+    out.push({ e, short, tip });
   }
   return out;
 }
@@ -134,8 +135,9 @@ function chatBodyHTML(items, activeId) {
   let h = shown.map(it =>
     '<button type="button" class="date-chat-item' +
       (it.e.id === activeId ? ' cur' : '') +
-      '" data-eid="' + esc(it.e.id) + '">' +
-      '<span class="date-chat-preview">' + esc(it.preview) + '</span>' +
+      '" data-eid="' + esc(it.e.id) + '"' +
+      ' data-chat-tip="' + esc(it.tip) + '">' +
+      '<span class="date-chat-preview">' + esc(it.short) + '</span>' +
       '<span class="date-chat-time">' +
         esc(fmtDayOfEntry(it.e)) + ' ' + esc(fmtTimeOfEntry(it.e)) +
       '</span></button>'
@@ -144,6 +146,26 @@ function chatBodyHTML(items, activeId) {
     h += '<div class="hint">只显示前 ' + shown.length + ' 条，共 ' + items.length + ' 条</div>';
   }
   return h;
+}
+
+/* 悬浮预览：截取前 20 字，放在条目左侧，避免被菜单滚动区裁掉。 */
+function makeChatPeek() {
+  const el = document.createElement('div');
+  el.className = 'chat-peek';
+  document.body.appendChild(el);
+  return el;
+}
+
+function positionChatPeek(peek, item) {
+  if (!peek || !item) return;
+  const r = item.getBoundingClientRect();
+  const pw = peek.offsetWidth, ph = peek.offsetHeight;
+  let left = r.left - pw - 8;
+  if (left < 8) left = Math.min(innerWidth - pw - 8, r.right + 8);
+  let top = r.top + r.height / 2 - ph / 2;
+  top = Math.max(8, Math.min(top, innerHeight - ph - 8));
+  peek.style.left = Math.max(8, left) + 'px';
+  peek.style.top = top + 'px';
 }
 
 export function openDatePicker() {
@@ -191,6 +213,7 @@ export function openDatePicker() {
 
   const ac = new AbortController();
   const close = makeEscapable(() => {
+    if (peek.isConnected) peek.remove();
     if (menu.isConnected) menu.remove();
     ac.abort();
     if (dateMenuClose === close) dateMenuClose = null;
@@ -198,7 +221,26 @@ export function openDatePicker() {
   dateMenuClose = close;
 
   const body = menu.querySelector('.date-menu-body');
+  const peek = makeChatPeek();
+  const hidePeek = () => { peek.classList.remove('on'); };
+  const showPeek = (item) => {
+    const text = item.dataset.chatTip || '';
+    if (!text) { hidePeek(); return; }
+    peek.textContent = text;
+    peek.classList.add('on');
+    positionChatPeek(peek, item);
+  };
+  body.addEventListener('pointerover', ev => {
+    const item = ev.target.closest('.date-chat-item');
+    if (item) showPeek(item);
+  });
+  body.addEventListener('pointerout', ev => {
+    const item = ev.target.closest('.date-chat-item');
+    if (item && !item.contains(ev.relatedTarget)) hidePeek();
+  });
+  body.addEventListener('scroll', hidePeek, { passive: true });
   const renderBody = () => {
+    hidePeek();
     if (showChat && navTab === 'chat') {
       const active = currentChatEntry(chat);
       body.innerHTML = chatBodyHTML(chat, active && active.e.id);

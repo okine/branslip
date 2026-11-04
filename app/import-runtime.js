@@ -863,17 +863,16 @@ function countWork(topic, countCopies) {
  * @param {string} source        'deepseek' | 'claude' | 'qwen' | 'gemini' | 'telegram' | ...
  * @param {Function} [report]    (done, total) => void，进度回调
  */
-/* 话题引用 ID 来自 createdAtMs；不同对话的首条记录可能落在同一毫秒，
-   导入前统一压到互不相同的毫秒上，避免 "~2026-…" 引用撞车。 */
-function uniquifyTopicTimes(topic, used) {
+/* 导入话题的 createdAt 用「导入时」的时间，而不是源对话的创建时间。
+   话题 ID 来自 createdAtMs，所以必须在 processReplyHeaders/persist 之前
+   统一分配；同一次导入内保证毫秒互不相同。 */
+function assignImportTimes(topic, used) {
   if (!topic) return;
-  if (topic.entries.length) {
-    let ms = topic.createdAtMs;
-    while (used.has(ms) && ms > 1) ms -= 1;
-    used.add(ms);
-    topic.createdAtMs = ms;
-  }
-  for (const br of topic.branches) uniquifyTopicTimes(br, used);
+  let ms = Date.now();
+  while (used.has(ms)) ms++;
+  used.add(ms);
+  topic.createdAtMs = ms;
+  for (const br of topic.branches) assignImportTimes(br, used);
 }
 
 export async function importAsTopics(parentDir, conversations, source, report, opts) {
@@ -894,7 +893,7 @@ export async function importAsTopics(parentDir, conversations, source, report, o
   /* 先把所有话题时间定下来（含分支），再写文件 */
   {
     const used = new Set();
-    for (const conv of conversations) uniquifyTopicTimes(conv.root, used);
+    for (const conv of conversations) assignImportTimes(conv.root, used);
   }
 
   /* 进度总数：话题 + 月份文件 + 附件（只有选了导出目录才复制） */
