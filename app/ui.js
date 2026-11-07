@@ -212,6 +212,7 @@ export function closeModal() {
   } else {
     // 防御：_modalClose 丢了（理论上不该发生）
     modalRoot.innerHTML = '';
+    document.body.classList.remove('modal-open');
     if (_pendingResolve) { const r = _pendingResolve; _pendingResolve = null; r(false); }
   }
 }
@@ -221,11 +222,15 @@ export function openModal(html, onClose) {
   if (_modalClose) closeModal();
 
   modalRoot.innerHTML = '<div class="mask"><div class="modal">' + html + '</div></div>';
+  document.body.classList.add('modal-open');
+  /* 让正在进行的“引用跳转 / 话题恢复”停下来，不要穿透模态框滚动背景。 */
+  try { document.dispatchEvent(new CustomEvent('szj:modal-open')); } catch (e) {}
   const mask = modalRoot.querySelector('.mask');
   mask.addEventListener('pointerdown', e => { if (e.target === mask) closeModal(); });
 
   _modalClose = makeEscapable(() => {
     modalRoot.innerHTML = '';
+    document.body.classList.remove('modal-open');
     _modalClose = null;
     if (_pendingResolve) {
       const r = _pendingResolve;
@@ -471,6 +476,8 @@ export function openLightbox(items, startIndex, opts) {
 
   /* 快速翻页时，旧的 await 可能晚于新的 show 返回 —— 用序号丢弃过期结果 */
   let showSeq = 0;
+  let touchStart = null;
+  let swipeDone = false;
 
   function prefetch(i) {
     if (!opts.resolve) return;
@@ -548,9 +555,30 @@ export function openLightbox(items, startIndex, opts) {
     if (typeof opts.onClose === 'function') opts.onClose();
   });
 
-  d.addEventListener('click', e => { if (e.target === d) close(); });
+  d.addEventListener('click', e => {
+    if (swipeDone) { swipeDone = false; return; }
+    if (e.target === d) close();
+  });
   prev.addEventListener('click', e => { e.stopPropagation(); show(idx - 1); });
   next.addEventListener('click', e => { e.stopPropagation(); show(idx + 1); });
+
+  /* 手机：左右滑动翻页；桌面仍保留左右键。 */
+  d.addEventListener('pointerdown', e => {
+    if (e.pointerType && e.pointerType !== 'touch') return;
+    touchStart = { x: e.clientX, y: e.clientY, id: e.pointerId };
+  }, { passive: true });
+  d.addEventListener('pointerup', e => {
+    if (!touchStart || (e.pointerId != null && e.pointerId !== touchStart.id)) return;
+    const dx = e.clientX - touchStart.x;
+    const dy = e.clientY - touchStart.y;
+    touchStart = null;
+    if (items.length < 2) return;
+    if (Math.abs(dx) < 50 || Math.abs(dx) < Math.abs(dy) * 1.2) return;
+    swipeDone = true;
+    setTimeout(() => { swipeDone = false; }, 350);
+    show(dx < 0 ? idx + 1 : idx - 1);
+  }, { passive: true });
+  d.addEventListener('pointercancel', () => { touchStart = null; }, { passive: true });
 
   locate.addEventListener('click', e => {
     e.stopPropagation();

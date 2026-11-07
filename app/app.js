@@ -47,7 +47,7 @@ import {
   renderEntries, wireEntries,
 } from './entries.js';
 import {
-    jumpToBlock, jumpToStamp, jumpToRow, maybeLoadEarlier, loadEarlier,
+    jumpToRow, maybeLoadEarlier, loadEarlier,
   } from './entries-jump.js';
 // 新增
 import {
@@ -58,6 +58,7 @@ import {
   setReply, refreshPreview, wireComposer, setRelevance,
 } from './composer.js';
 import { wireTrash } from './trash.js';
+import { hideRefPreview } from './ref-preview.js';
 import { wireImage } from './image.js';
 import { initFixedButtons, syncFixedButtons } from './fixed-buttons.js';
 
@@ -259,8 +260,12 @@ document.addEventListener('click', e => {
       const node = findTopicByRefId(tid);
       if (node) {
         if (Store.ui.merged) exitMerge();
-        select(node.id);
-        if (block) setTimeout(() => jumpToBlock(node, block), 80);
+        if (node.silent && !node._entriesLoaded) {
+          select(node.id);
+          toast('目标消息在静默话题中，请先加载记录');
+          return;
+        }
+        select(node.id, { anchor: block ? { block } : null });
       }
     }
     return;
@@ -285,6 +290,8 @@ document.addEventListener('click', e => {
   /* ── 3. 内部引用 → 跨话题跳转 ── */
   const ref = e.target.closest('.md-ref');
   if (ref) {
+    /* 点击引用后预览卡必须立刻消失，不能等 pointerout */
+    hideRefPreview();
     const tid   = ref.dataset.topicId;
     const path  = ref.dataset.path;
     const stamp = ref.dataset.stamp;
@@ -302,24 +309,27 @@ document.addEventListener('click', e => {
 
     if (Store.ui.merged) exitMerge();
 
-    if (!Store.ui.merged && node.id === Store.ui.selectedId) {
+    if (node.silent && !node._entriesLoaded) {
+      select(node.id);
+      toast('目标消息在静默话题中，请先加载记录');
+      return;
+    }
+
+    if (!Store.ui.merged && node.id === Store.ui.selectedId && !block && !stamp) {
       const sc = $('#entriesScroll');
       pushViewState({
         nodeId: Store.ui.selectedId,
         scrollTop: sc ? sc.scrollTop : 0,
       });
-    } else {
-      select(node.id);
     }
-
-    if (block) setTimeout(() => jumpToBlock(node, block), 80);
-    else if (stamp) setTimeout(() => jumpToStamp(node, stamp), 80);
+    select(node.id, { anchor: (block || stamp) ? { block, stamp } : null });
     return;
   }
 
   /* ── 4. ★新增：关联头 → 跳到被关联的那条 ── */
   const relHead = e.target.closest('.relevance-head');
   if (relHead) {
+    hideRefPreview();
     const topicRef = relHead.dataset.relevTopic;   // '~tid' 或路径（可能没有）
     const block    = relHead.dataset.relevBlock;   // bid
 
@@ -335,8 +345,12 @@ document.addEventListener('click', e => {
     if (!node) { toast('找不到关联的目标'); return; }
 
     if (Store.ui.merged) exitMerge();
-    select(node.id);
-    if (block) setTimeout(() => jumpToBlock(node, block), 80);
+    if (node.silent && !node._entriesLoaded) {
+      select(node.id);
+      toast('目标消息在静默话题中，请先加载记录');
+      return;
+    }
+    select(node.id, { anchor: block ? { block } : null });
     return;
   }
 

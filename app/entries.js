@@ -27,6 +27,8 @@ import { Store } from './store.js';
 import { parseSenderPrefix } from './md.js';
 import { Mutate } from './mutate.js';
 import { hydrateImages, resetImgObserver } from './image.js';
+import { unloadSilentTopic } from './loader.js';
+import { waitForIdle } from './writer.js';
 import { toast, openMenuAt } from './ui.js';
 import {
    entryInnerHTML, entryBlockHTML, 
@@ -38,7 +40,7 @@ import {
 } from './entries-render.js';
 import { scrollIntoViewIn, scrollToBottom, flashEl } from './scroll-utils.js';
 import {
-  clearMultiSelect, doFold,
+  clearMultiSelect, doFold, moveSelectedTo,
   buildEntryMenuItems, handleEntriesClick,
   wireOps,
 } from './entries-ops.js';
@@ -77,6 +79,8 @@ let D = {
   renderMerged: () => {},
   select: () => {},
 };
+$('#navUnloadFloat')?.addEventListener('click', unloadNow);
+
 export function wireEntries(h) { Object.assign(D, h); }
 
 /* ---------- 模块状态 ---------- */
@@ -141,8 +145,34 @@ function loadSilentNow(n) {
     });
 }
 
+function updateUnloadBtn() {
+  const btn = $('#navUnloadFloat');
+  if (!btn) return;
+  const n = Store.node(Store.ui.selectedId);
+  btn.classList.toggle('on', !Store.ui.merged && !!(n && n.silent && n._entriesLoaded));
+}
+
+async function unloadNow() {
+  const n = Store.node(Store.ui.selectedId);
+  if (!n || !n.silent || !n._entriesLoaded) return;
+  if (Store.ui.editingEntry || Store.ui.renaming || Store.ui.creatingParent) {
+    toast('先结束当前编辑，再取消加载');
+    return;
+  }
+  await waitForIdle();
+  if (Store.ui.selectedId !== n.id) return;
+  const removed = unloadSilentTopic(n);
+  Store.rebuildIndex();
+  resetMeta();
+  updateTopCount();
+  renderEntries();
+  updateUnloadBtn();
+  toast('已取消加载，移除 ' + removed + ' 条静默记录');
+}
+
 export function renderEntries() {
   setDirectWindow(false);
+  updateUnloadBtn();
   clearEarlierObs();
   clearLaterObs();
   /* ★ flashEntry 是"下一帧要闪的那一条"，必须在本帧被消费掉 ——
@@ -544,6 +574,7 @@ $('#entriesScroll').addEventListener('scroll', () => {
 
 $('#multiBar').addEventListener('click', e => {
   if (e.target.closest('.mb-fold')) { doFold(); return; }
+  if (e.target.closest('.mb-move')) { moveSelectedTo(); return; }
   if (e.target.closest('.mb-cancel')) { clearMultiSelect(); return; }
 });
 

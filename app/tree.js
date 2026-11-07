@@ -47,7 +47,7 @@ import {
   findNode, findParent,  pOf, isDesc, subtreeIds,
 } from './tree-utils.js';
 import { renderEntries } from './entries.js';
-import { updateScrollBtn } from './entries-jump.js';
+import { updateScrollBtn, jumpToBlock, jumpToStamp, jumpToRow } from './entries-jump.js';
 import { setReply, setRelevance, restoreDraft } from './composer.js';
 import { recallScroll, flushScroll, rememberScroll, restoreTopAnchor, settleTopAnchor, captureAnchorFor } from './entries-jump.js';
 
@@ -95,9 +95,25 @@ const treeBox = treeRender.treeBox;
  * 选中
  * ============================================================ */
 
+let navSeq = 0;
+export function cancelNavigation() { navSeq++; }
+
+function queueAnchorJump(id, anchor) {
+  if (!anchor) return;
+  const seq = navSeq;
+  requestAnimationFrame(() => {
+    if (seq !== navSeq) return;
+    const n = Store.node(id);
+    if (!n) return;
+    if (anchor.block) jumpToBlock(n, anchor.block);
+    else if (anchor.stamp) jumpToStamp(n, anchor.stamp);
+  });
+}
+
 export function select(id, opts) {
   opts = opts || {};
-  if (!id) return;  
+  if (!id) return;
+  const seq = ++navSeq;  
 
   if (id === Store.ui.selectedId && !Store.ui.merged) {
     if (Store.ui.editingEntry) {
@@ -105,6 +121,7 @@ export function select(id, opts) {
     }
     closeSide();
     D.refreshPreview();
+    if (opts.anchor) queueAnchorJump(id, opts.anchor);
     return;
   }
 
@@ -165,11 +182,15 @@ export function select(id, opts) {
     const saved = recallScroll(id, Store.node(id));
     pushViewState({
       nodeId: id,
-      scrollTop: (saved != null) ? saved : (sc ? sc.scrollHeight : 0),
+      scrollTop: opts.anchor ? 0 : ((saved != null) ? saved : (sc ? sc.scrollHeight : 0)),
+      block: opts.anchor && opts.anchor.block || null,
+      stamp: opts.anchor && opts.anchor.stamp || null,
     });
   }
+  if (opts.anchor) { queueAnchorJump(id, opts.anchor); return; }
   if (opts.noScrollRestore) return;
   requestAnimationFrame(() => {
+    if (seq !== navSeq) return;
     const s = $('#entriesScroll'); if (!s) return;
     const node = Store.node(id);
     const anchor = (!wasMerged && node && node.scroll && node.scroll.id) ? node.scroll : null;
@@ -181,6 +202,7 @@ export function select(id, opts) {
       s.scrollTo({ top: target, behavior: 'instant' });
     }
     requestAnimationFrame(() => {
+      if (seq !== navSeq) return;
       if (anchor) settleTopAnchor(anchor, 4);
       updateScrollBtn();
     });
@@ -657,8 +679,9 @@ export function goToView(idx) {
   }
   if (!nid) return;
   
-  select(nid, { skipHistory: true, noScrollRestore: true });
-  requestAnimationFrame(() => {
+  const anchor = s.block ? { block: s.block } : (s.stamp ? { stamp: s.stamp } : null);
+  select(nid, { skipHistory: true, noScrollRestore: true, anchor });
+  if (!anchor) requestAnimationFrame(() => {
     const sc = document.querySelector('#entriesScroll');
     if (!sc) return;
     const memo = recallScroll(nid, Store.node(nid));
@@ -682,7 +705,8 @@ window.addEventListener('popstate', (e) => {
   goToView(idx);
 });
 
-document.querySelector('#navBackFloat')?.addEventListener('click', viewBack);  // ← 改
+document.querySelector('#navBackFloat')?.addEventListener('click', viewBack);
+document.addEventListener('szj:modal-open', cancelNavigation);  // ← 改
 
 /* ============================================================
  * 把话题写操作交给 tree-render.js

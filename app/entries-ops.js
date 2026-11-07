@@ -410,9 +410,14 @@ export function executeDelete(eid, n, ent) {
  * ============================================================ */
 
 export function moveEntryTo(ent, fromNode) {
-  openMovePicker('把这条记录移到哪个话题下？', [fromNode.id], targetId => {
+  openMovePicker('把这条记录移到哪个话题下？', [], async targetId => {
     const t = findNode(targetId);
     if (!t) return;
+    if (t.id === fromNode.id) { toast('这条记录已经在「' + t.title + '」中'); return; }
+    const ok = await confirmDialog('移动记录',
+      '将 1 条记录从「' + fromNode.title + '」移动到「' + t.title + '」？',
+      { okText: '确认', cancelText: '取消' });
+    if (!ok) return;
 
     const oldIdx = fromNode.entries.indexOf(ent);
     if (oldIdx < 0) { toast('记录已不存在'); return; }
@@ -486,6 +491,96 @@ export function moveEntryTo(ent, fromNode) {
   });
 }
 
+
+/* 多选转移：一次把选中的记录移动到另一个话题。 */
+export function moveSelectedTo() {
+  const fromNode = findNode(Store.ui.selectedId);
+  if (!fromNode) { toast('没有选中话题'); return; }
+  const ids = [...Store.ui.multiSelect];
+  const ents = fromNode.entries
+    .filter(e => ids.includes(e.id))
+    .sort((a, b) => a.createdAt - b.createdAt);
+  if (!ents.length) { toast('没有选中记录'); return; }
+
+  openMovePicker('把选中的 ' + ents.length + ' 条记录移到哪个话题下？',
+    [], async targetId => {
+      const target = findNode(targetId);
+      if (!target) return;
+      if (target.id === fromNode.id) {
+        toast('这些记录已经在「' + target.title + '」中');
+        return;
+      }
+      const ok = await confirmDialog('移动记录',
+        '将 ' + ents.length + ' 条记录从「' + fromNode.title + '」移动到「' + target.title + '」？',
+        { okText: '确认', cancelText: '取消' });
+      if (!ok) return;
+
+      const pinInfo = ents.map(e => ({
+        e,
+        was: Mutate.isPinned(fromNode, e),
+        pinIdx: fromNode.pinned.indexOf(e.createdAt),
+      }));
+
+      /* 1. 内存搬家 */
+      for (const e of ents) {
+        const i = fromNode.entries.indexOf(e);
+        if (i >= 0) fromNode.entries.splice(i, 1);
+        let k = target.entries.length;
+        while (k > 0 && target.entries[k - 1].createdAt > e.createdAt) k--;
+        target.entries.splice(k, 0, e);
+        Store.indexEntry(e, target);
+        if (Mutate.isPinned(fromNode, e)) {
+          Mutate.removePin(fromNode, e);
+          Mutate.addPin(target, e);
+        }
+      }
+
+      const paths = [];
+      for (const e of ents) {
+        for (const r of imageRefs(e.text)) {
+          if (r.path && r.path.startsWith('attachments/')) paths.push(r.path);
+        }
+      }
+
+      enqueue(async () => {
+        try {
+          for (const p of paths) {
+            await copyAttachment(fromNode._dir, target._dir, p);
+          }
+          for (const e of ents) await persistMonthOf(fromNode, e.createdAt);
+          for (const e of ents) await persistMonthOf(target, e.createdAt);
+          if (pinInfo.some(x => x.was)) {
+            await writePins(fromNode);
+            await writePins(target);
+          }
+        } catch (err) {
+          /* 回滚：从目标移除，按时间放回源话题，恢复置顶。 */
+          for (const e of ents) {
+            const i = target.entries.indexOf(e);
+            if (i >= 0) target.entries.splice(i, 1);
+            if (fromNode.entries.indexOf(e) < 0) fromNode.entries.push(e);
+            Store.indexEntry(e, fromNode);
+          }
+          fromNode.entries.sort((a, b) => a.createdAt - b.createdAt);
+          for (const x of pinInfo) {
+            if (!x.was) continue;
+            Mutate.removePin(target, x.e);
+            if (!fromNode.pinned.includes(x.e.createdAt)) {
+              const pi = Math.min(Math.max(x.pinIdx, 0), fromNode.pinned.length);
+              fromNode.pinned.splice(pi, 0, x.e.createdAt);
+            }
+          }
+          D.renderAll();
+          toast('转移失败，已恢复：' + ((err && err.message) || err));
+          throw err;
+        }
+      });
+
+      clearMultiSelect();
+      D.renderAll();
+      toast('已移动 ' + ents.length + ' 条到「' + target.title + '」');
+    });
+}
 
 /* ============================================================
  * 右键菜单

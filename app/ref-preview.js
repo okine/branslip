@@ -19,6 +19,11 @@ import { findTopicByRefId, findByPath } from './tree-utils.js';
 let previewTimer = null;
 let previewCard = null;
 let previewAnchor = null;
+let touchTimer = null;
+let touchRef = null;
+let touchStart = null;
+let touchLong = false;
+let suppressClick = false;
 
 /* ---------- 主逻辑 ---------- */
 
@@ -35,6 +40,15 @@ function showRefPreview(ref) {
 
   if (!node) {
     showCard(ref, '<div class="ref-preview-empty">引用的内容已不存在</div>');
+    return;
+  }
+
+  if (node.silent && !node._entriesLoaded) {
+    showCard(ref,
+      '<div class="ref-preview-head">' + esc(node.title) + '</div>' +
+      '<div class="ref-preview-empty">目标消息在静默话题中</div>' +
+      '<div class="ref-preview-silent-hint">该话题启动和搜索时不加载记录。' +
+      '打开话题并点击「加载记录」后才能预览。</div>');
     return;
   }
 
@@ -108,6 +122,8 @@ export function hideRefPreview() {
 /* ---------- 事件 ---------- */
 
 document.addEventListener('pointerover', e => {
+  /* 触屏不用 hover；长按由下面的 touch 逻辑处理 */
+  if (e.pointerType === 'touch') return;
   /* 鼠标移到卡片上 → 取消隐藏（虽然卡片 pointer-events:none，一般不会触发） */
   if (e.target.closest('.ref-preview')) {
     clearTimeout(previewTimer);
@@ -121,10 +137,70 @@ document.addEventListener('pointerover', e => {
 });
 
 document.addEventListener('pointerout', e => {
+  if (e.pointerType === 'touch' && touchLong) return;
   const ref = e.target.closest('.md-ref');
   if (!ref) return;
   if (e.relatedTarget && e.relatedTarget.closest('.ref-preview')) return;
   hideRefPreview();
+});
+
+/* ---------- 触屏长按预览 ---------- */
+
+document.addEventListener('pointerdown', e => {
+  if (e.pointerType !== 'touch') return;
+  const ref = e.target.closest('.md-ref');
+  if (!ref) { touchLong = false; hideRefPreview(); return; }
+  clearTimeout(touchTimer);
+  touchRef = ref;
+  touchStart = { x: e.clientX, y: e.clientY };
+  touchLong = false;
+  touchTimer = setTimeout(() => {
+    touchLong = true;
+    showRefPreview(ref);
+  }, 450);
+}, { passive: true });
+
+document.addEventListener('pointermove', e => {
+  if (e.pointerType !== 'touch' || !touchRef || !touchStart) return;
+  const dx = e.clientX - touchStart.x;
+  const dy = e.clientY - touchStart.y;
+  if (dx * dx + dy * dy > 100) {
+    clearTimeout(touchTimer);
+    touchTimer = null;
+    touchRef = null;
+  }
+}, { passive: true });
+
+document.addEventListener('pointerup', e => {
+  if (e.pointerType !== 'touch' || !touchRef) return;
+  clearTimeout(touchTimer);
+  touchTimer = null;
+  if (touchLong) suppressClick = true;
+  touchRef = null;
+}, { passive: true });
+
+document.addEventListener('pointercancel', () => {
+  clearTimeout(touchTimer);
+  touchTimer = null;
+  touchRef = null;
+  touchLong = false;
+}, { passive: true });
+
+/* 长按已经显示预览后，抬手那一下不要再触发链接跳转 */
+document.addEventListener('click', e => {
+  if (suppressClick && e.target.closest('.md-ref')) {
+    e.preventDefault();
+    e.stopPropagation();
+    suppressClick = false;
+    touchLong = false;
+    return;
+  }
+  suppressClick = false;
+}, true);
+
+/* 阻止长按 .md-ref 时弹出系统文字选择 / 链接菜单 */
+document.addEventListener('contextmenu', e => {
+  if (e.target.closest('.md-ref')) e.preventDefault();
 });
 
 /* ★ 以下三条是"卡片不消失"的兜底 —— pointerout 在这些场景下不触发 */

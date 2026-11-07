@@ -168,6 +168,7 @@ export function openPinPage() {
   const n = Store.node(Store.ui.selectedId);
   if (!n) return;
   let list = Mutate.pinnedEntries(n);
+  let firstDraw = true;
 
   openFullPage({
     title: () => '置顶消息 · ' + list.length,
@@ -191,6 +192,24 @@ export function openPinPage() {
     },
 
     afterDraw: (api) => {
+      /* 首次打开时把“当前置顶”对到底部，而不是永远从 #1 开始。
+         之后取消置顶触发 redraw 时保留列表滚动位置。 */
+      if (firstDraw) {
+        firstDraw = false;
+        const listEl = api.el.querySelector('.pp-list');
+        if (listEl) {
+          const cur = Number.isInteger(Store.ui.pinCursor) ? Store.ui.pinCursor : list.length - 1;
+          const idx = Math.max(0, Math.min(cur, list.length - 1));
+          const card = listEl.querySelectorAll('.pp-card')[idx];
+          if (card) {
+            const cr = card.getBoundingClientRect();
+            const lr = listEl.getBoundingClientRect();
+            listEl.scrollTop = Math.max(0, listEl.scrollTop + cr.bottom - lr.bottom);
+          } else {
+            listEl.scrollTop = listEl.scrollHeight;
+          }
+        }
+      }
       /* hydrateIn 是一次性水合，不需要也不应该重置主列表的全局观察器 */
       hydrateIn(api.el, n);
     },

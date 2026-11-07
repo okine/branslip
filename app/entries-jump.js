@@ -340,7 +340,10 @@ function settleBottom(s) {
   /* 布局变化时继续贴底；用户主动滚轮/触摸/切换话题则立刻释放。 */
   if (typeof ResizeObserver === 'function') {
     bottomSettleRO = new ResizeObserver(() => {
-      if (Store.ui.selectedId !== sid) { stopBottomSettle(); return; }
+      if (Store.ui.selectedId !== sid || document.body.classList.contains('modal-open')) {
+        stopBottomSettle();
+        return;
+      }
       scrollToBottom(s, false);
     });
     bottomSettleRO.observe(box);
@@ -367,7 +370,9 @@ export function scrollToLatest() {
   /* 兜底：没有 ResizeObserver 时也在前几帧继续贴底。 */
   if (typeof ResizeObserver !== 'function') {
     [0, 60, 180, 400, 900].forEach(t => setTimeout(() => {
-      if (Store.ui.selectedId === sid) scrollToBottom(s, false);
+      if (Store.ui.selectedId === sid && !document.body.classList.contains('modal-open')) {
+        scrollToBottom(s, false);
+      }
     }, t));
   }
   settleBottom(s);
@@ -711,6 +716,7 @@ export function jumpToRow(node, targetId) {
 
 export function jumpToBlock(node, blockId) {
   const tries = () => {
+    if (document.body.classList.contains('modal-open')) return;
     const hit = Store.blockEntry(blockId);
     if (hit && hit.node === node) { jumpToRow(node, hit.e.id); return; }
     /* 兼容旧数据/未建 block 索引的调用 */
@@ -723,6 +729,7 @@ export function jumpToBlock(node, blockId) {
 
 export function jumpToStamp(node, stamp) {
   const tries = () => {
+    if (document.body.classList.contains('modal-open')) return;
     const t = node.entries.find(e => entryStamp(e) === stamp);
     if (t) { jumpToRow(node, t.id); return; }
     /* 同上：内存里找不到，加载 DOM 分页也不会变出这条记录 */

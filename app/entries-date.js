@@ -274,12 +274,10 @@ export function openDatePicker() {
   /* 列表点击 → 跳转 */
   body.addEventListener('click', ev => {
     const day = ev.target.closest('[data-day]');
-    if (day) { close(); jumpToDay(sc, day.dataset.day); return; }
+    if (day) { jumpToDay(sc, day.dataset.day); return; }
     const chatItem = ev.target.closest('[data-eid]');
     if (chatItem) {
-      const eid = chatItem.dataset.eid;
-      close();
-      jumpToRow(n, eid);
+      jumpToRow(n, chatItem.dataset.eid);
     }
   });
 
@@ -292,6 +290,9 @@ export function openDatePicker() {
 
   /* 点击外部关闭 —— 用 signal 绑定，close 时一起摘掉 */
   wireOutsideClose(menu, close, ac.signal, t => t.id === 'dateJump');
+
+  /* 跳转后不关闭；鼠标离开面板再关闭 */
+  menu.addEventListener('pointerleave', close, { signal: ac.signal });
 }
 
 

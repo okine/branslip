@@ -148,6 +148,23 @@ function dedupeEntries(node) {
 }
 
 /** 静默话题：用户真正打开它时才读取全部记录。 */
+/** 只读一个静默话题的月份文件，不挂到 Store；拾之随机抽样用。 */
+export async function readSilentTopicFile(node, fileName) {
+  if (!node || !node._dir || !fileName) return [];
+  const txt = await Storage.readText(node._dir, fileName);
+  return parseEntries(txt);
+}
+
+/** 静默话题临时加载后，可再次卸载记录，只保留元数据。 */
+export function unloadSilentTopic(node) {
+  if (!node || !node.silent || !node._entriesLoaded) return 0;
+  const count = node.entries.length;
+  node.entries = [];
+  node._entriesLoaded = false;
+  node._idxOf = null;
+  return count;
+}
+
 export async function loadSilentTopic(node) {
   if (!node || node._entriesLoaded) return 0;
   const files = node._entryFiles || [];

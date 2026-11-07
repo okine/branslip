@@ -26,7 +26,9 @@ import { renderEntryBody } from './entries-render.js';
 import { hydrateImages, unobserveImages } from './image.js';
 import { walk,stats } from './tree-utils.js';
 import { select } from './tree.js';
-import { renderEntries } from './entries.js';
+import { renderEntries, updateTopCount } from './entries.js';
+import { readSilentTopicFile, loadSilentTopic } from './loader.js';
+import { resetMeta } from './meta-row.js';
 import { toast, confirmDialog, makeEscapable, openFullPage } from './ui.js';
 
 
@@ -35,33 +37,106 @@ import { toast, confirmDialog, makeEscapable, openFullPage } from './ui.js';
  * ============================================================ */
 
 /* 跳到某条记录（关页面 → 切话题 → 闪烁定位）。拾之 / 讨论串共用。 */
-function jumpToEntry(api, nid, eid) {
+async function jumpToEntry(api, nid, eid, stamp) {
   api.close();
+  const target = nid ? Store.node(nid) : null;
+  if (target && target.silent && !target._entriesLoaded) {
+    toast('正在加载静默话题…');
+    try {
+      await loadSilentTopic(target);
+      Store.rebuildIndex();
+      resetMeta();
+    } catch (err) {
+      toast('静默话题加载失败：' + ((err && err.message) || err));
+      return;
+    }
+  }
+  /* 抽样 entry 是独立解析出来的，id 与真正加载后的 id 不同；
+     用 _writeStamp 找稳定目标。 */
+  if (target && stamp) {
+    const hit = target.entries.find(x => x._writeStamp === stamp);
+    if (hit) eid = hit.id;
+  }
+  if (!eid) { toast('找不到这条记录'); return; }
   Store.ui.flashEntry = eid;
   if (nid && nid !== Store.ui.selectedId) select(nid, { noScrollRestore: true });
-  else renderEntries();
+  else { renderEntries(); updateTopCount(); }
 }
 
 export function pickItPage() {
   const pool = [];
-  walk(Store.root, n => { for (const e of n.entries) pool.push({ e, n }); });
-  if (!pool.length) { toast('还没有任何记录'); return; }
+  const silentNodes = [];
+  walk(Store.root, n => {
+    if (n.silent && !n._entriesLoaded) silentNodes.push(n);
+    else for (const e of n.entries) pool.push({ e, n });
+  });
+  if (!pool.length && !silentNodes.length) { toast('还没有任何记录'); return; }
 
   let mode = 'random';          // 'random' | 'relations'
+  let includeSilent = false;
+  let picked = [];
   let relActive = null;
   let relGroups = [];
 
-  function pickThree() {
-    const count = Math.min(3, pool.length);
-    const picked = [], used = new Set();
-    while (picked.length < count) {
-      const i = Math.floor(Math.random() * pool.length);
+  function pickThree(source = pool, want = 3) {
+    const count = Math.min(want, source.length);
+    const out = [], used = new Set();
+    while (out.length < count) {
+      const i = Math.floor(Math.random() * source.length);
       if (used.has(i)) continue;
       used.add(i);
-      picked.push(pool[i]);
+      out.push(source[i]);
     }
-    picked.sort((a, b) => a.e.createdAt - b.e.createdAt);
-    return picked;
+    return out;
+  }
+
+  /* 静默话题抽样：每张卡独立随机选话题 + 月份文件，
+     所以可能出现同一个月，也可能来自不同月份。
+     只读一个月份文件，不把整个话题加载进 Store。 */
+  async function sampleSilent(count) {
+    const usable = silentNodes.filter(n => Array.isArray(n._entryFiles) && n._entryFiles.length);
+    const out = [], used = new Set();
+    let attempts = 0;
+    while (out.length < count && usable.length && attempts++ < count * 12) {
+      const n = usable[Math.floor(Math.random() * usable.length)];
+      const files = n._entryFiles;
+      const file = files[Math.floor(Math.random() * files.length)];
+      try {
+        const entries = await readSilentTopicFile(n, file);
+        if (!entries.length) continue;
+        const e = entries[Math.floor(Math.random() * entries.length)];
+        const key = e._writeStamp + '\u0000' + e.text;
+        if (used.has(key)) continue;
+        used.add(key);
+        out.push({ e, n, sampled: true });
+      } catch (err) {
+        console.warn('[拾之] 静默话题抽样失败', n.title, file, err);
+      }
+    }
+    return out;
+  }
+
+  async function refreshPicked(api) {
+    if (!includeSilent) {
+      picked = pickThree(pool);
+    } else {
+      const sampled = await sampleSilent(3);
+      picked = [];
+      if (sampled.length) {
+        picked.push(sampled[Math.floor(Math.random() * sampled.length)]);
+        picked.push(...pickThree(pool, 2));
+        if (picked.length < 3) {
+          for (const it of sampled) {
+            if (picked.length >= 3) break;
+            if (!picked.includes(it)) picked.push(it);
+          }
+        }
+      } else {
+        picked = pickThree(pool);
+      }
+      picked.sort((a, b) => a.e.createdAt - b.e.createdAt);
+    }
+    api.redraw();
   }
 
   /* 关联标题 → 记录列表。标题就是 ∝ 头里的标签。（改回原来的"按标题分组"） */
@@ -87,7 +162,8 @@ export function pickItPage() {
       const { html: body } = renderEntryBody(e);
       const tag = '<button class="src-tag" data-src="' + n.id + '">' +
         badgeHTML(n) + '<span>' + esc(n.title) + '</span></button>';
-      cards += '<div class="pp-card" data-eid="' + e.id + '" data-node="' + n.id + '">' +
+      cards += '<div class="pp-card" data-eid="' + e.id + '" data-node="' + n.id + '"' +
+        ' data-write-stamp="' + esc(e._writeStamp || '') + '">' +
         tag + body +
         '<span class="meta">' + fmtStamp(e.createdAt) +
           (e.edited ? ' · 已编辑' : '') + '</span>' +
@@ -108,7 +184,15 @@ export function pickItPage() {
     let h = modeBtn('random', '随机', I.sparkles) +
             modeBtn('relations', '关联一览', I.relevance);
 
-    if (mode !== 'relations') return h;
+    if (mode !== 'relations') {
+      if (silentNodes.length) {
+        h += '<label class="pickit-silent-toggle">' +
+          '<input type="checkbox" data-pickit-silent' +
+            (includeSilent ? ' checked' : '') + '> ' +
+          '<span>包含静默话题</span></label>';
+      }
+      return h;
+    }
 
     h += '<div class="rel-side-head">关联标题</div>';
     if (!relGroups.length) {
@@ -152,7 +236,7 @@ export function pickItPage() {
     '</div>';
   }
 
-  let picked = pickThree();
+  if (!includeSilent) picked = pickThree(pool);
   let pageEl = null;
 
   openFullPage({
@@ -178,6 +262,12 @@ export function pickItPage() {
     },
 
     onEvent: (ev, api) => {
+      const silentCb = ev.target.closest('[data-pickit-silent]');
+      if (silentCb) {
+        includeSilent = silentCb.checked;
+        refreshPicked(api);
+        return;
+      }
       const modeBtn = ev.target.closest('[data-pickit-mode]');
       if (modeBtn) {
         if (pageEl) unobserveImages(pageEl);
@@ -186,7 +276,8 @@ export function pickItPage() {
           relGroups = buildRelGroups();
           relActive = relGroups[0] ? relGroups[0].label : null;
         } else {
-          picked = pickThree();
+          includeSilent = false;
+          picked = pickThree(pool);
         }
         api.redraw();
         return;
@@ -194,8 +285,7 @@ export function pickItPage() {
 
       if (ev.target.closest('.pickit-refresh')) {
         if (pageEl) unobserveImages(pageEl);
-        picked = pickThree();
-        api.redraw();
+        refreshPicked(api);
         return;
       }
 
@@ -221,7 +311,8 @@ export function pickItPage() {
         const card = go.closest('[data-node]');
         const nid  = card ? card.dataset.node : null;
         const eid  = go.dataset.pickitGoto;
-        jumpToEntry(api, nid, eid);
+        const stamp = card ? card.dataset.writeStamp : '';
+        jumpToEntry(api, nid, eid, stamp);
         return;
       }
     },

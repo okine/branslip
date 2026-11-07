@@ -662,17 +662,24 @@ function workTick(opts, rep) {
 }
 
 async function copyOnePhoto(photoDir, attachmentsDir, fname) {
-  try {
-    let srcFh;
-    try { srcFh = await resolveFile(photoDir, fname); }
-    catch (e1) { srcFh = await resolveFile(photoDir, 'photos/' + fname); }
-    const blob = await srcFh.getFile();
-    await Storage.writeBlob(attachmentsDir, fname, blob);
-    return true;
-  } catch (err) {
-    console.warn('[import] 图片复制失败', fname, err);
-    return false;
+  /* 注意：Tauri 的 resolveFile 只返回伪句柄，不检查文件是否存在；
+     真正读文件是在 getFile() 才抛错。因此候选路径必须在同一个 try 里
+     完成 resolve + getFile，不能只在 resolveFile 上做 fallback。
+     否则选根目录时，root/fname 的“成功句柄”会先被拿到，
+     getFile 失败后永远不会再尝试 photos/fname。 */
+  let lastErr = null;
+  for (const rel of [fname, 'photos/' + fname]) {
+    try {
+      const srcFh = await resolveFile(photoDir, rel);
+      const blob = await srcFh.getFile();
+      await Storage.writeBlob(attachmentsDir, fname, blob);
+      return true;
+    } catch (err) {
+      lastErr = err;
+    }
   }
+  console.warn('[import] 图片复制失败', fname, lastErr);
+  return false;
 }
 
 async function copyOneSticker(photoDir, attachmentsDir, source, target) {
@@ -1211,6 +1218,12 @@ export async function runImportFile(file, deps) {
   /* ★ 读文件 + 解析可能很慢（大导出几十 MB）。先点亮小灯并让出一帧，
      否则用户看到的是"点了导入但完全没反应"。 */
   let conversations = null, source = '', importFn = null;
+  const parseInfo = {
+    skippedEmptyConversations: 0,
+    skippedEmptyMessages: 0,
+    missingParents: 0,
+    missingFileNames: 0,
+  };
   beginBusy('正在解析聊天记录');
   try {
     await nextFrame();
@@ -1252,7 +1265,7 @@ export async function runImportFile(file, deps) {
         setBusyLabel('正在解析聊天记录');
         for (const [src, parseFn, imp] of attempts) {
           try {
-            conversations = parseFn(text);
+            conversations = parseFn(text, parseInfo);
             source = src;
             importFn = imp;
             break;
@@ -1298,6 +1311,22 @@ export async function runImportFile(file, deps) {
         topics: 0, entries: 0, images: 0, imageFailed: 0,
         pins: 0, services: 0, failedConvs: 0, failures: [],
       };
+      if (parseInfo.skippedEmptyConversations) {
+        stats.failures.push('跳过 ' + parseInfo.skippedEmptyConversations +
+          ' 个没有正文的对话');
+      }
+      if (parseInfo.skippedEmptyMessages) {
+        stats.failures.push('有 ' + parseInfo.skippedEmptyMessages +
+          ' 条消息没有正文，已跳过');
+      }
+      if (parseInfo.missingParents) {
+        stats.failures.push('有 ' + parseInfo.missingParents +
+          ' 条消息的父消息缺失，已按时间顺序线性化');
+      }
+      if (parseInfo.missingFileNames) {
+        stats.failures.push('有 ' + parseInfo.missingFileNames +
+          ' 个 Claude 附件只有 file_uuid/无名，仅保留占位名');
+      }
 
       /* 导入的每一步（30 张图 / 一个月文件 / 一个话题）单独入队，
          中间可以插入用户的保存、编辑等任务。 */

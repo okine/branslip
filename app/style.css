@@ -214,6 +214,21 @@ mark{background:#E8D98F;color:inherit;border-radius:2px;padding:0 1px}
   transform:translateY(-2px);
 }
 
+.nav-unload-float{
+  position:absolute;
+  right:22px;
+  top:var(--nav-btn-top, 76px);
+  min-width:78px;height:36px;padding:0 14px;border-radius:99px;
+  background:var(--white);color:var(--ink2);border:1px solid var(--line);
+  font-size:12px;font-weight:700;letter-spacing:.5px;
+  box-shadow:0 4px 14px rgba(43,38,28,.12);
+  opacity:0;pointer-events:none;
+  transition:opacity .2s,background .15s,color .15s,top .15s;
+  z-index:15;
+}
+.nav-unload-float.on{opacity:1;pointer-events:auto}
+.nav-unload-float.on:hover{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+
 /* 前进按钮预留 —— 以后并排时改 left 即可 */
 #hamburger{display:none;width:36px;height:36px;align-items:center;justify-content:center;border-radius:9px;color:var(--ink2)}
 #hamburger:hover{background:rgba(43,38,28,.07)}
@@ -415,6 +430,9 @@ body.has-bg .entry-row.flash::before{
 .fold-toggle:hover{background:var(--accent-soft);border-color:var(--accent)}
 .fold-cancel:hover{color:var(--danger);border-color:var(--danger);background:#F6E7E2}
 
+body.modal-open #entriesScroll{overflow:hidden;overscroll-behavior:contain}
+.modal,.picker{overscroll-behavior:contain}
+
 .multi-bar{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(12px);
   background:var(--ink);color:#F3EFE3;padding:8px 16px;border-radius:99px;
   display:flex;align-items:center;gap:12px;
@@ -425,6 +443,8 @@ body.has-bg .entry-row.flash::before{
 .multi-bar button{font-size:12.5px;font-weight:700;padding:5px 12px;border-radius:99px;transition:.15s}
 .multi-bar .mb-fold{background:var(--accent);color:#F5F1E4}
 .multi-bar .mb-fold:hover{background:var(--accent-deep)}
+.multi-bar .mb-move{color:#F3EFE3;border:1px solid rgba(255,255,255,.28)}
+.multi-bar .mb-move:hover{background:rgba(255,255,255,.14);border-color:rgba(255,255,255,.5)}
 .multi-bar .mb-cancel{color:#F3EFE3}
 .multi-bar .mb-cancel:hover{background:rgba(255,255,255,.15)}
 
@@ -595,7 +615,7 @@ body.has-bg .entry-row.reply-entry .entry{background:rgba(255,253,248,.92)}
 .md-tag{color:var(--accent);font-weight:600;cursor:pointer;
   border-radius:4px;padding:0 2px;transition:.15s}
 .md-tag:hover{background:var(--accent-soft);text-decoration:none}
-.md-ref{color:var(--accent);font-weight:600;cursor:pointer;
+.md-ref{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;color:var(--accent);font-weight:600;cursor:pointer;
   background:rgba(22,101,88,.07);border-radius:5px;
   padding:0 5px;text-decoration:none;transition:.15s}
 .md-ref:hover{background:rgba(22,101,88,.16)}
@@ -641,6 +661,12 @@ body.has-bg .entry-row.reply-entry .entry{background:rgba(255,253,248,.92)}
 .ref-preview-empty {
   color: var(--ink3);
   font-style: italic;
+}
+.ref-preview-silent-hint {
+  margin-top: 5px;
+  color: var(--ink3);
+  font-size: 11.5px;
+  line-height: 1.55;
 }
 
 /* DeepSeek 思考块 */
@@ -714,7 +740,7 @@ body.has-bg .entry-row.reply-entry .entry{background:rgba(255,253,248,.92)}
 
 .lightbox{position:fixed;inset:0;z-index:870;background:rgba(24,21,15,.85);display:flex;
   align-items:center;justify-content:center;cursor:zoom-out;animation:fade .18s;
-  padding-bottom:15px}
+  padding-bottom:15px;touch-action:pan-y}
 .lightbox .lb-img{max-width:94vw;max-height:94vh;border-radius:8px;
   box-shadow:0 24px 80px rgba(0,0,0,.5);cursor:default;transition:opacity .12s}
 .lightbox .lb-img.loading{opacity:.35}
@@ -1208,6 +1234,9 @@ label.pick-row input[type=checkbox]{flex:none;accent-color:var(--accent);width:1
 }
 .pp-side-item:hover{background:var(--accent-soft);color:var(--accent)}
 .pp-side-item.on{background:var(--accent-soft);color:var(--accent);font-weight:700}
+.pickit-silent-toggle{display:flex;align-items:center;gap:7px;margin:10px 2px 2px;
+  font-size:11.5px;color:var(--ink3);cursor:pointer;user-select:none}
+.pickit-silent-toggle input{accent-color:var(--accent);width:14px;height:14px;flex:none}
 .pp-side-item .pp-side-icon{display:flex;align-items:center;justify-content:center;height:18px}
 .pp-side-item .pp-side-count{font-size:10px;opacity:.7;font-variant-numeric:tabular-nums}
 .pp-side-clear{
@@ -1633,6 +1662,7 @@ body.has-bg .pin-chip{background:rgba(255,253,248,.92)}
   .entry,.entry.editing{max-width:86%}
   #composer{padding:10px 12px 14px}
   .top-count{display:none}
+  .lb-prev,.lb-next{display:none!important}
   .topic-media{grid-template-columns:repeat(auto-fill,minmax(84px,1fr))}
 }
 

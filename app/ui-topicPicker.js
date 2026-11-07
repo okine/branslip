@@ -174,7 +174,7 @@ export function openTopicPicker(opts) {
       query = qEl.value;
       drawFlat();
     });
-    setTimeout(() => { try { qEl.focus(); } catch (e) {} }, 0);
+    setTimeout(() => { try { qEl.focus({ preventScroll: true }); } catch (e) {} }, 0);
   }
 
   /* —— 全选 / 清空（只作用于当前过滤结果）—— */

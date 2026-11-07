@@ -35,21 +35,67 @@ function parseTs(s) {
 
 /* ---------- chat_messages → IR ---------- */
 
-function messagesToIR(messages) {
-  return messages
-    .filter(m => m && m.uuid)
-    .map(m => makeMessage(m.uuid, parseTs(m.created_at), {
-      parentId: (m.parent_message_uuid && m.parent_message_uuid !== ROOT_UUID)
-        ? m.parent_message_uuid : null,
+function messagesToIR(messages, stats) {
+  const list = messages.filter(m => m && m.uuid);
+  const ids = new Set(list.map(m => m.uuid));
+
+  /* Claude 的导出有时会缺 assistant 消息，导致 human 的 parent UUID
+     在文件里找不到。以前这种节点会变成多个 root，被拆成多个子话题。
+     这里按时间顺序把“父节点缺失”的消息接到上一条存在消息上，保持线性。 */
+  const sorted = list.slice().sort((a, b) => {
+    const d = parseTs(a.created_at) - parseTs(b.created_at);
+    return d || list.indexOf(a) - list.indexOf(b);
+  });
+  let prev = null;
+  return sorted.map(m => {
+    let pid = (m.parent_message_uuid && m.parent_message_uuid !== ROOT_UUID)
+      ? m.parent_message_uuid : null;
+    if (pid && !ids.has(pid)) {
+      if (stats) stats.missingParents = (stats.missingParents || 0) + 1;
+      pid = prev ? prev.uuid : null;
+    }
+    prev = m;
+    return makeMessage(m.uuid, parseTs(m.created_at), {
+      parentId: pid,
       raw: m,
-    }));
+    });
+  });
 }
 
 /* ---------- 内容提取 ---------- */
 
+function textOfContent(v) {
+  if (typeof v === 'string') return v;
+  if (!Array.isArray(v)) return '';
+  return v.map(x => {
+    if (!x || typeof x !== 'object') return '';
+    if (typeof x.text === 'string') return x.text;
+    if (typeof x.content === 'string') return x.content;
+    return '';
+  }).filter(Boolean).join('\n\n');
+}
+
+function attachmentNames(msg) {
+  const out = [];
+  const add = f => {
+    if (!f || typeof f !== 'object') return;
+    const n = f.file_name || f.name ||
+      (f.file_uuid ? 'file_' + String(f.file_uuid).slice(0, 8) : '');
+    if (n && !out.includes(n)) out.push(n);
+  };
+  if (Array.isArray(msg.files)) msg.files.forEach(add);
+  if (Array.isArray(msg.attachments)) msg.attachments.forEach(add);
+  return out;
+}
+
 function extractContent(msg) {
-  const content = msg.content;
-  if (!Array.isArray(content)) return { role: 'skip' };
+  let content = msg.content;
+  if (typeof content === 'string') content = [{ type: 'text', text: content }];
+  if (!Array.isArray(content) || !content.length) {
+    content = (typeof msg.text === 'string' && msg.text.trim())
+      ? [{ type: 'text', text: msg.text }]
+      : [];
+  }
 
   const texts = [];
   const thinks = [];
@@ -69,7 +115,20 @@ function extractContent(msg) {
           .filter(Boolean).join('\n\n');
       }
       if (t.trim()) thinks.push(t);
+    } else if (item.type === 'tool_use') {
+      const name = String(item.name || item.tool_name || '工具');
+      const input = item.input != null ? JSON.stringify(item.input, null, 2) : '';
+      texts.push('🔧 使用工具：' + name + (input ? '\n\n```json\n' + input + '\n```' : ''));
+    } else if (item.type === 'tool_result') {
+      const t = textOfContent(item.content) || textOfContent(item.text);
+      if (t.trim()) texts.push('📎 工具结果\n\n' + t);
     }
+  }
+
+  /* 有些导出把正文只放在顶层 text；content 里可能只有空 text/tool 块。 */
+  if (!texts.length && !thinks.length &&
+      typeof msg.text === 'string' && msg.text.trim()) {
+    texts.push(msg.text);
   }
 
   const raw = msg.created_at;
@@ -78,8 +137,7 @@ function extractContent(msg) {
   const rawStamp = normalizeRawStamp(raw);
 
   if (msg.sender === 'human') {
-    const fileNames = Array.isArray(msg.files)
-      ? msg.files.map(f => f && f.file_name).filter(Boolean) : [];
+    const fileNames = attachmentNames(msg);
     let body = texts.join('\n\n');
     if (fileNames.length) {
       const head = fileNames.map(n => '📎 ' + n).join('\n');
@@ -143,7 +201,8 @@ function firstHumanText(node) {
 
 /* ---------- 顶层 API ---------- */
 
-export function parseClaudeExport(jsonText) {
+export function parseClaudeExport(jsonText, stats) {
+  stats = stats || {};
   const raw = splitJSON(jsonText);
   const convs = [];
 
@@ -152,10 +211,25 @@ export function parseClaudeExport(jsonText) {
     const messages = conv.chat_messages;
     if (!Array.isArray(messages) || !messages.length) {
       console.warn('[import-claude] 跳过：没有 chat_messages', conv.uuid);
+      stats.skippedEmptyConversations = (stats.skippedEmptyConversations || 0) + 1;
       continue;
     }
 
-    const tree = buildMessageTree(messagesToIR(messages));
+    for (const m of messages) {
+      const c = m && m.content;
+      const hasContent = (typeof c === 'string' && c.trim()) ||
+        (Array.isArray(c) && c.length) ||
+        (typeof m.text === 'string' && m.text.trim());
+      if (!hasContent) stats.skippedEmptyMessages = (stats.skippedEmptyMessages || 0) + 1;
+      for (const f of [...(Array.isArray(m.files) ? m.files : []),
+                       ...(Array.isArray(m.attachments) ? m.attachments : [])]) {
+        if (f && !f.file_name && !f.name) {
+          stats.missingFileNames = (stats.missingFileNames || 0) + 1;
+        }
+      }
+    }
+
+    const tree = buildMessageTree(messagesToIR(messages, stats));
 
     const title = pickTitle(conv, tree);
     const sourceCreatedAt = parseTs(conv.created_at);
@@ -166,6 +240,7 @@ export function parseClaudeExport(jsonText) {
 
     if (!root.entries.length && !root.branches.length) {
       console.warn('[import-claude] 跳过：没有任何消息', title);
+      stats.skippedEmptyConversations = (stats.skippedEmptyConversations || 0) + 1;
       continue;
     }
 

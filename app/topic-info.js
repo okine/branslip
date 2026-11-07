@@ -56,6 +56,7 @@ function statHTML(label, value) {
 
 /* 媒体区：图片 / 贴纸两个横向标签，全部展示，不再分页 */
 function renderMedia(media, state) {
+  const pending = !!state.pending;   /* 静默话题：记录尚未加载 */
   const list = state.tab === 'sticker' ? media.stickers : media.images;
   const total = list.length;
   const slice = list;
@@ -64,11 +65,16 @@ function renderMedia(media, state) {
     '<div class="topic-media-bar">' +
       '<div class="topic-media-tabs">' +
         '<button type="button" class="media-tab' + (state.tab === 'image' ? ' on' : '') +
-          '" data-media-tab="image">图片 · ' + media.images.length + '</button>' +
+          '" data-media-tab="image">图片 · ' + (pending ? '未加载' : media.images.length) + '</button>' +
         '<button type="button" class="media-tab' + (state.tab === 'sticker' ? ' on' : '') +
-          '" data-media-tab="sticker">贴纸 · ' + media.stickers.length + '</button>' +
+          '" data-media-tab="sticker">贴纸 · ' + (pending ? '未加载' : media.stickers.length) + '</button>' +
       '</div>' +
     '</div>';
+
+  if (pending) {
+    return tabs + '<div class="topic-empty">静默话题：记录尚未加载，图片和贴纸暂不统计。' +
+      '<br>打开话题并点击「加载记录」后会显示在这里。</div>';
+  }
 
   const grid = slice.map((it, i) => {
     const idx = i;
@@ -131,9 +137,9 @@ function renderDetails(node, media, state, introEditing, introDraft) {
       '</div>' +
     '</div>' +
     '<div class="topic-stats">' +
-      statHTML('记录', node.entries.length) +
-      statHTML('图片', media.images.length) +
-      statHTML('贴纸', media.stickers.length) +
+      statHTML('记录', node.silent && !node._entriesLoaded ? '未加载' : node.entries.length) +
+      statHTML('图片', node.silent && !node._entriesLoaded ? '未加载' : media.images.length) +
+      statHTML('贴纸', node.silent && !node._entriesLoaded ? '未加载' : media.stickers.length) +
       statHTML('子话题', node.children.length) +
     '</div>' +
     '<div class="topic-card">' +
@@ -172,6 +178,7 @@ export function openTopicDetails(node) {
   const media = collectMedia(node);
   const mediaState = {
     tab: media.images.length ? 'image' : (media.stickers.length ? 'sticker' : 'image'),
+    pending: !!(node.silent && !node._entriesLoaded),
   };
   const loader = createImageURLLoader(node);
   let thumbIO = null;
