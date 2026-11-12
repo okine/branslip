@@ -184,19 +184,26 @@ const Mutate = (() => {
    *   cov.fold  → 折叠对象（from/to 是毫秒）
    *   cov.a/b   → 用来判断"我是折叠头还是折叠尾"
    */
-  function buildFoldCover(node, start) {
+  function buildFoldCover(node, start, rev) {
     const cover = new Map();
     const folds = Array.isArray(node.folds) ? node.folds : [];
     if (!folds.length) return cover;
 
     const total = node.entries.length;
-    const msIdx = new Map();
-    for (let i = 0; i < total; i++) msIdx.set(node.entries[i].createdAt, i);
+    /* createdAt → 下标只依赖 entries 与 dataRevision；不要每次渲染重建 1M Map。 */
+    let msIdx = rev != null ? node._foldMsIdx : null;
+    if (!msIdx || msIdx.rev !== rev || msIdx.n !== total) {
+      const map = new Map();
+      for (let i = 0; i < total; i++) map.set(node.entries[i].createdAt, i);
+      msIdx = { rev, n: total, map };
+      if (rev != null) node._foldMsIdx = msIdx;
+    }
+    const idx = msIdx.map;
 
     for (const f of folds) {
       if (!f || typeof f.from !== 'number' || typeof f.to !== 'number') continue;
-      const a = msIdx.has(f.from) ? msIdx.get(f.from) : -1;
-      const b = msIdx.has(f.to) ? msIdx.get(f.to) : -1;
+      const a = idx.has(f.from) ? idx.get(f.from) : -1;
+      const b = idx.has(f.to) ? idx.get(f.to) : -1;
       if (a < 0 || b < a) continue;
       for (let j = Math.max(a, start == null ? 0 : start); j <= b; j++) {
         cover.set(j, { fold: f, a, b });

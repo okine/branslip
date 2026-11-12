@@ -47,7 +47,7 @@ import {
   findNode, findParent,  pOf, isDesc, subtreeIds,
 } from './tree-utils.js';
 import { renderEntries } from './entries.js';
-import { updateScrollBtn, jumpToBlock, jumpToStamp, jumpToRow } from './entries-jump.js';
+import { updateScrollBtn, jumpToBlock, jumpToStamp, jumpToRow, settleBottom } from './entries-jump.js';
 import { setReply, setRelevance, restoreDraft } from './composer.js';
 import { recallScroll, flushScroll, rememberScroll, restoreTopAnchor, settleTopAnchor, captureAnchorFor } from './entries-jump.js';
 
@@ -121,7 +121,18 @@ export function select(id, opts) {
     }
     closeSide();
     D.refreshPreview();
-    if (opts.anchor) queueAnchorJump(id, opts.anchor);
+    if (opts.anchor) {
+      if (!opts.skipHistory) {
+        const sc = $('#entriesScroll');
+        pushViewState({
+          nodeId: id,
+          scrollTop: sc ? sc.scrollTop : 0,
+          block: opts.anchor.block || null,
+          stamp: opts.anchor.stamp || null,
+        });
+      }
+      queueAnchorJump(id, opts.anchor);
+    }
     return;
   }
 
@@ -196,14 +207,19 @@ export function select(id, opts) {
     const anchor = (!wasMerged && node && node.scroll && node.scroll.id) ? node.scroll : null;
     /* 优先按「顶部那条记录 + 像素偏移」还原：清缓存/改分页后像素位置会变 */
     const okAnchor = anchor ? restoreTopAnchor(anchor) : false;
+    let needBottom = false;
     if (!okAnchor) {
       const saved = wasMerged ? null : recallScroll(id, Store.node(id));
       const target = saved != null ? saved : s.scrollHeight;
+      needBottom = saved == null;
       s.scrollTo({ top: target, behavior: 'instant' });
     }
     requestAnimationFrame(() => {
       if (seq !== navSeq) return;
-      if (anchor) settleTopAnchor(anchor, 4);
+      if (anchor) settleTopAnchor(anchor, 4, () => seq === navSeq);
+      /* 新话题/无位置记忆的话题：初始 scrollHeight 可能还没算上图片和懒渲染，
+         这里继续贴底，等图片水合、内容变高后再落到底。 */
+      if (needBottom) settleBottom(s);
       updateScrollBtn();
     });
   });

@@ -162,6 +162,7 @@ export function unloadSilentTopic(node) {
   node.entries = [];
   node._entriesLoaded = false;
   node._idxOf = null;
+  node._foldMsIdx = null;
   return count;
 }
 

@@ -344,6 +344,12 @@ function parseOneChat(chat) {
     sourceCreatedAt: NaN,
   });
   root._importPins = resolvePins(pinEvents, byTgId);
+  root._pinEvents = pinEvents.map(m => ({
+    target: byTgId.get(String(m.message_id)) || null,
+    action: m.action === 'pin_message' ? 'pin' : 'unpin',
+    at: parseTime(m),
+    actor: m.actor || '',
+  })).filter(x => x.target);
 
   if (!root.entries.length) return null;
   return {
@@ -516,6 +522,12 @@ function createChatBuilder(chat) {
       for (const se of serviceEntries) entries.push(se);
       const root = finalizeFlatTopic(entries, { title, sourceCreatedAt: NaN });
       root._importPins = resolvePins(pinEvents, byTgId);
+      root._pinEvents = pinEvents.map(m => ({
+        target: byTgId.get(String(m.message_id)) || null,
+        action: m.action === 'pin_message' ? 'pin' : 'unpin',
+        at: parseTime(m),
+        actor: m.actor || '',
+      })).filter(x => x.target);
       if (!root.entries.length) return null;
       return {
         title,

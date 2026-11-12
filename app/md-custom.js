@@ -31,6 +31,22 @@
 import { esc } from './utils.js';
 import katex from './vendor/katex/katex.mjs';
 
+/* :::pin 的内部只允许转义文本 + 引用链接；不嵌套递归 renderMD。 */
+function pinBodyHTML(body) {
+  let h = esc(body);
+  return h.replace(
+    /\[\[((?:~[A-Za-z0-9_\-]+)|[^\[\]|#^]+)#\^([A-Za-z0-9_\-]+)(?:\|([^\[\]]*))?\]\]/g,
+    (m, tid, block, alias) => {
+      const label = alias && alias.trim() ? alias : '→ 消息';
+      const attrs = tid.startsWith('~')
+        ? ' data-topic-id="' + esc(tid.slice(1)) + '"'
+        : ' data-path="' + esc(tid) + '"';
+      return '<a class="md-ref"' + attrs + ' data-block="' + esc(block) + '">→ ' +
+        esc(label) + '</a>';
+    }
+  );
+}
+
 /* ---------- 哨兵 ---------- */
 
 const REF_SENTINEL = '\uE000';
@@ -102,6 +118,23 @@ export function preprocess(src, opts) {
         '<summary>💭 思考过程</summary>' +
         '<div class="md-think-body">' + esc(body) + '</div>' +
         '</details>');
+    });
+  }
+
+  /* ── :::raw 未知 fragment / 原始结构 ── */
+  if (t.includes(':::raw')) {
+    t = t.replace(/^:::raw(?:[ \t]+([^\n]*))?\n([\s\S]*?)\n:::/gm, (m, label, body) => {
+      return put('<span class="md-raw">' +
+        (label ? '<span class="md-raw-label">' + esc(label.trim()) + '</span>' : '') +
+        esc(body) + '</span>');
+    });
+  }
+
+  /* ── :::pin 置顶/取消置顶日志 ── */
+  if (t.includes(':::pin')) {
+    t = t.replace(/^:::pin\n([\s\S]*?)\n:::/gm, (m, inner) => {
+      const body = inner.replace(/^\\:::/gm, ':::');
+      return put('<span class="md-pin">' + pinBodyHTML(body) + '</span>');
     });
   }
 

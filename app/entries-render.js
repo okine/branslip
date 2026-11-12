@@ -106,15 +106,17 @@ export function entryHTML(e, idx, srcNode, foldInfo) {
   const nid = srcNode ? srcNode.id : Store.ui.selectedId;
   const isReply = dialogueEnabled && isReplyMessage(e.text);
   const isRelev = dialogueEnabled && isRelatedMessage(e.text);
-  const isSys = /^:::system\b/.test(e.text);
+  const isSys = /^:::(?:system|pin)\b/.test(e.text);
 
   /* 主视角：话题 owner 的消息右对齐（像“我”），其他人左对齐 */
   const owner = (srcNode && srcNode.owner)
     || (nid && Store.node(nid) && Store.node(nid).owner)
     || null;
   const sp = owner ? parseSenderPrefix(e.text) : null;
-  const isMe = !!(sp && sp.name === owner);
-  const isOther = !!(sp && sp.name !== owner);
+  const isMe = !!(owner && sp && sp.name === owner);
+  /* owner 已设置但这条没有可识别的发送者前缀时，绝不能落回默认的右对齐。
+     未知/无前缀统一按“其他人”左对齐，避免非主视角消息跑到右边。 */
+  const isOther = !!(owner && !isMe);
 
   let foldCtrl = '';
   if (foldInfo) {

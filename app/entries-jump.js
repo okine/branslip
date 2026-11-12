@@ -212,20 +212,53 @@ export function restoreTopAnchor(anchor) {
  * 一次对齐不够：图片/字体/懒渲染会陆续改变行高，恢复后前几帧位置还会漂。
  * 用户一动手（pointerdown / wheel）立刻停手，不抢滚动。
  */
-export function settleTopAnchor(anchor, frames) {
+let topSettleRO = null;
+let topSettleTimer = null;
+let topSettleAC = null;
+
+function stopTopSettle() {
+  if (topSettleRO) { topSettleRO.disconnect(); topSettleRO = null; }
+  if (topSettleTimer) { clearTimeout(topSettleTimer); topSettleTimer = null; }
+  if (topSettleAC) { topSettleAC.abort(); topSettleAC = null; }
+}
+
+export function settleTopAnchor(anchor, frames, stillValid) {
   if (!anchor || !anchor.id) return;
+  stopTopSettle();
   const max = frames || 4;
   let n = 0, cancelled = false;
-  const cancel = () => { cancelled = true; };
-  window.addEventListener('pointerdown', cancel, { once: true, passive: true });
-  window.addEventListener('wheel', cancel, { once: true, passive: true });
+  const cancel = () => {
+    cancelled = true;
+    stopTopSettle();
+  };
+  topSettleAC = new AbortController();
+  window.addEventListener('pointerdown', cancel, { once: true, passive: true, signal: topSettleAC.signal });
+  window.addEventListener('wheel', cancel, { once: true, passive: true, signal: topSettleAC.signal });
+  window.addEventListener('touchstart', cancel, { once: true, passive: true, signal: topSettleAC.signal });
+
+  const valid = () => !cancelled &&
+    !document.body.classList.contains('modal-open') &&
+    (typeof stillValid !== 'function' || stillValid());
+
   const tick = () => {
-    if (cancelled) return;
+    if (!valid()) return;
     restoreTopAnchor(anchor);
     if (++n >= max) return;
     requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
+
+  /* 图片水合会持续改变行高，4 帧不够。用 ResizeObserver 在内容尺寸变化时
+     继续把锚点拉回原位；用户一滚动/触摸/打开模态框就停。 */
+  const box = $('#entries');
+  if (box && typeof ResizeObserver === 'function') {
+    topSettleRO = new ResizeObserver(() => {
+      if (!valid()) { stopTopSettle(); return; }
+      restoreTopAnchor(anchor);
+    });
+    topSettleRO.observe(box);
+    topSettleTimer = setTimeout(stopTopSettle, 5000);
+  }
 }
 
 /** 离开某个话题之前把它的顶部锚点记下来 —— 只有 DOM 还是它的时候才抓得到。 */
@@ -330,7 +363,7 @@ function stopBottomSettle() {
   if (bottomSettleAC) { bottomSettleAC.abort(); bottomSettleAC = null; }
 }
 
-function settleBottom(s) {
+export function settleBottom(s) {
   if (!s) return;
   stopBottomSettle();
   const box = $('#entries');
@@ -353,7 +386,7 @@ function settleBottom(s) {
   s.addEventListener('wheel', stop, { passive: true, signal: bottomSettleAC.signal });
   s.addEventListener('pointerdown', stop, { signal: bottomSettleAC.signal });
   s.addEventListener('touchstart', stop, { passive: true, signal: bottomSettleAC.signal });
-  bottomSettleTimer = setTimeout(stop, 3000);
+  bottomSettleTimer = setTimeout(stop, 5000);
 }
 
 export function scrollToLatest() {

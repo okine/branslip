@@ -126,66 +126,138 @@ function mappingToIR(mapping) {
 
 /* ---------- 内容提取 ---------- */
 
+function deepSeekContentText(v) {
+  if (typeof v === 'string') return v;
+  if (Array.isArray(v)) return v.map(deepSeekContentText).filter(Boolean).join('\n');
+  if (v && typeof v === 'object') {
+    if (typeof v.text === 'string') return v.text;
+    if (typeof v.content !== 'undefined') return deepSeekContentText(v.content);
+    if (typeof v.thinking === 'string') return v.thinking;
+    try { return JSON.stringify(v, null, 2); } catch (e) { return String(v); }
+  }
+  return v == null ? '' : String(v);
+}
+
+function deepSeekFragmentText(f) {
+  if (!f || typeof f !== 'object') return '';
+  if (f.content !== undefined) return deepSeekContentText(f.content);
+  if (f.text !== undefined) return deepSeekContentText(f.text);
+  if (f.answer !== undefined) return deepSeekContentText(f.answer);
+  if (f.thinking !== undefined) return deepSeekContentText(f.thinking);
+  return '';
+}
+
+function deepSeekFiles(ff) {
+  const list = Array.isArray(ff.files) ? ff.files
+    : (ff.files ? [ff.files] : (ff.file ? [ff.file] : []));
+  const out = [];
+  for (const file of list) {
+    if (!file) continue;
+    const obj = (typeof file === 'string') ? { name: file } : file;
+    const name = obj.file_name || obj.name || obj.filename || obj.path;
+    if (name) out.push({ name: String(name), raw: obj });
+    else out.push({ name: '', raw: obj });
+  }
+  return out;
+}
+
+function deepSeekRawFragment(f) {
+  let body;
+  try { body = JSON.stringify(f, null, 2); }
+  catch (e) { body = String(f); }
+  const type = String((f && f.type) || 'UNKNOWN').replace(/[^\w.-]/g, '_');
+  return ':::raw ' + type + '\n' + body + '\n:::';
+}
+
+function deepSeekFallbackFragments(msg) {
+  /* 极少数导出不再给 fragments，只剩 role/content/text/answer。 */
+  const role = String(msg && msg.role || '').toLowerCase();
+  const out = [];
+  const think = msg && (msg.thinking || msg.reasoning);
+  if (think) out.push({ type: 'THINK', content: think });
+  const content = msg && (msg.content !== undefined ? msg.content : msg.text !== undefined ? msg.text : msg.answer);
+  if (content !== undefined && content !== null) {
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        const t = String((block && block.type) || '').toLowerCase();
+        if (t === 'thinking' || t === 'think') out.push({ type: 'THINK', content: block });
+        else out.push({ type: role === 'user' ? 'REQUEST' : 'RESPONSE', content: block });
+      }
+    } else {
+      out.push({ type: role === 'user' ? 'REQUEST' : 'RESPONSE', content });
+    }
+  }
+  return out;
+}
+
 function extractDeepSeekContent(msg) {
-  if (!msg || !Array.isArray(msg.fragments)) return { role: 'skip' };
+  if (!msg || typeof msg !== 'object') return { role: 'skip' };
 
-  const frags = msg.fragments;
-  const reqFrags = frags.filter(f => f && f.type === 'REQUEST');
-  const aiFrags = frags.filter(f =>
-    f && (f.type === 'RESPONSE' || f.type === 'THINK') &&
-    typeof f.content === 'string' && f.content.trim());
-  const fileFrags = frags.filter(f =>
-    f && f.type === 'FILE' && Array.isArray(f.files));
+  const rawFrags = Array.isArray(msg.fragments) ? msg.fragments
+    : (msg.fragments && typeof msg.fragments === 'object' ? [msg.fragments] : []);
+  const frags = rawFrags.length ? rawFrags : deepSeekFallbackFragments(msg);
 
-  const raw = msg.inserted_at;
+  const raw = msg.inserted_at || msg.created_at || msg.timestamp;
   const tzFromRaw = tzOffsetFromStamp(raw);
   const tz = (tzFromRaw != null) ? tzFromRaw : -new Date().getTimezoneOffset();
   const rawStamp = normalizeRawStamp(raw);
 
-  /* ★ 一个 node 可能同时有 REQUEST 和 RESPONSE → 返回数组 */
-  const out = [];
-
-  /* ★ 文件-only 的 REQUEST 也要生成用户记录：
-     以前只找 content.trim() 的 REQUEST，用户只发附件时整条消息会消失。 */
+  const reqTexts = [];
+  const aiParts = [];
+  const unknown = [];
   const fileNames = [];
   const seenNames = new Set();
-  for (const ff of fileFrags) for (const file of ff.files) {
-    if (!file) continue;
-    const name = file.file_name || file.name;
-    if (!name || seenNames.has(name)) continue;
-    seenNames.add(name);
-    fileNames.push(name);
-  }
-  const reqText = reqFrags
-    .map(f => (typeof f.content === 'string' ? f.content.trim() : ''))
-    .filter(Boolean)
-    .join('\n\n');
 
-  if (reqFrags.length || fileNames.length) {
-    let text = reqText;
-    if (fileNames.length) {
-      const files = fileNames.map(n => '📎 ' + n).join('\n');
-      text = text ? files + '\n\n' + text : files;
+  for (const f of frags) {
+    if (!f || typeof f !== 'object') {
+      unknown.push(deepSeekRawFragment(f));
+      continue;
     }
-    if (text) {
-      out.push({ role: 'user', text, thinking: '', rawStamp, tzOffset: tz });
+    const type = String(f.type || '').toUpperCase();
+    if (type === 'REQUEST') {
+      const text = deepSeekFragmentText(f);
+      if (text) reqTexts.push(text);
+    } else if (type === 'RESPONSE' || type === 'THINK') {
+      /* 非字符串 content 也保留，不能因为类型判断丢掉整条回答。 */
+      const text = deepSeekFragmentText(f);
+      if (text) aiParts.push({ type, text });
+    } else if (type === 'FILE') {
+      for (const file of deepSeekFiles(f)) {
+        if (!file.name || seenNames.has(file.name)) continue;
+        seenNames.add(file.name);
+        fileNames.push(file.name);
+      }
+    } else {
+      /* 未知 fragment 不静默 skip：原样保留在可读的 raw 块里。 */
+      unknown.push(deepSeekRawFragment(f));
     }
   }
 
-  if (aiFrags.length) {
-    const parts = [];
-    const thinks = [];
-    for (const f of aiFrags) {
-      if (f.type === 'THINK') thinks.push(f.content);
-      else if (f.type === 'RESPONSE') parts.push(f.content);
-    }
-    out.push({
-      role: 'assistant',
-      text: parts.join('\n\n'),
-      thinking: thinks.join('\n\n'),
-      rawStamp, tzOffset: tz,
-    });
+  const out = [];
+  let reqText = reqTexts.join('\n\n');
+  if (fileNames.length) {
+    const files = fileNames.map(n => '📎 ' + n).join('\n');
+    reqText = files + (reqText ? '\n\n' + reqText : '');
   }
+  if (reqText) out.push({
+    role: 'user', text: reqText, thinking: '',
+    rawStamp, tzOffset: tz,
+  });
+
+  const aiBody = aiParts.map(part => {
+    if (part.type === 'THINK') {
+      const safe = String(part.text).replace(/(^|\n):::/g, '$1\\:::');
+      return ':::think\n' + safe + '\n:::';
+    }
+    return part.text;
+  }).filter(Boolean).join('\n\n');
+
+  const extra = unknown.join('\n\n');
+  const body = aiBody && extra ? aiBody + '\n\n' + extra : (aiBody || extra);
+  if (body) out.push({
+    role: 'assistant', text: body, thinking: '',
+    rawStamp, tzOffset: tz,
+  });
 
   return out.length ? out : { role: 'skip' };
 }

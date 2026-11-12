@@ -55,11 +55,14 @@ function statHTML(label, value) {
 /* ---------- 渲染 ---------- */
 
 /* 媒体区：图片 / 贴纸两个横向标签，全部展示，不再分页 */
+const MEDIA_BATCH = 80;
+
 function renderMedia(media, state) {
   const pending = !!state.pending;   /* 静默话题：记录尚未加载 */
   const list = state.tab === 'sticker' ? media.stickers : media.images;
   const total = list.length;
-  const slice = list;
+  const shown = Math.min(total, state.shown ? state.shown[state.tab] : MEDIA_BATCH);
+  const slice = list.slice(0, shown);
 
   const tabs =
     '<div class="topic-media-bar">' +
@@ -95,7 +98,11 @@ function renderMedia(media, state) {
     (state.tab === 'sticker' ? '贴纸' : '图片') + '</div>';
 
   return tabs + (total
-    ? '<div class="topic-media">' + grid + '</div>'
+    ? '<div class="topic-media">' + grid + '</div>' +
+      (shown < total
+        ? '<div class="topic-media-loadmore" data-media-loadmore>继续加载 · 还有 ' +
+          (total - shown) + ' 个</div>'
+        : '')
     : empty);
 }
 
@@ -179,9 +186,11 @@ export function openTopicDetails(node) {
   const mediaState = {
     tab: media.images.length ? 'image' : (media.stickers.length ? 'sticker' : 'image'),
     pending: !!(node.silent && !node._entriesLoaded),
+    shown: { image: MEDIA_BATCH, sticker: MEDIA_BATCH },
   };
   const loader = createImageURLLoader(node);
   let thumbIO = null;
+  let moreIO = null;
 
   let introEditing = false;
   let introSaving = false;
@@ -298,8 +307,20 @@ export function openTopicDetails(node) {
 
     afterDraw: (api) => {
       if (thumbIO) { thumbIO.disconnect(); thumbIO = null; }
+      if (moreIO) { moreIO.disconnect(); moreIO = null; }
       const list = api.el.querySelector('.pp-list');
       const root = list || api.el;
+      const more = root.querySelector('[data-media-loadmore]');
+      if (more) {
+        moreIO = new IntersectionObserver(entries => {
+          if (!entries.some(e => e.isIntersecting)) return;
+          const cur = mediaState.tab === 'sticker' ? media.stickers : media.images;
+          mediaState.shown[mediaState.tab] = Math.min(cur.length,
+            (mediaState.shown[mediaState.tab] || MEDIA_BATCH) + MEDIA_BATCH);
+          api.redraw();
+        }, { root, rootMargin: '500px 0px' });
+        moreIO.observe(more);
+      }
       const thumbs = root.querySelectorAll('.ti-thumb[data-img-path]');
       if (thumbs.length) {
         thumbIO = new IntersectionObserver(entries => {
@@ -344,6 +365,15 @@ export function openTopicDetails(node) {
         return;
       }
 
+      /* 无 IntersectionObserver 时的“继续加载”兜底 */
+      if (ev.target.closest('[data-media-loadmore]')) {
+        const cur = mediaState.tab === 'sticker' ? media.stickers : media.images;
+        mediaState.shown[mediaState.tab] = Math.min(cur.length,
+          (mediaState.shown[mediaState.tab] || MEDIA_BATCH) + MEDIA_BATCH);
+        api.redraw();
+        return;
+      }
+
       /* 缩略图 → 灯箱 */
       const th = ev.target.closest('.ti-thumb[data-img-path]');
       if (th) {
@@ -358,6 +388,7 @@ export function openTopicDetails(node) {
 
     onClose: () => {
       if (thumbIO) { thumbIO.disconnect(); thumbIO = null; }
+      if (moreIO) { moreIO.disconnect(); moreIO = null; }
       loader.release();
     },
   });

@@ -16,6 +16,7 @@
  */
 
 import { Storage } from './storage.js';
+import { PLATFORM } from './platform.js';
 import { $, togglePop } from './utils.js';
 import { Store } from './store.js';
 import { resolveFile } from './io.js';
@@ -35,8 +36,39 @@ export const theme = {
   borderThickness:2,
   bg: null,
   bgMask: 45,
+  bgDesktop: null,
+  bgMobile: null,
+  bgMaskDesktop: 45,
+  bgMaskMobile: 35,
   dialogue: true, 
 };
+const BG_PROFILE = (PLATFORM.isAndroid || PLATFORM.isMobileWeb) ? 'mobile' : 'desktop';
+const BG_LABEL = BG_PROFILE === 'mobile' ? '手机' : '桌面';
+const BG_OTHER = BG_PROFILE === 'mobile' ? 'desktop' : 'mobile';
+
+function activeBgName() {
+  return BG_PROFILE === 'mobile' ? theme.bgMobile : theme.bgDesktop;
+}
+function activeBgMask() {
+  return BG_PROFILE === 'mobile' ? theme.bgMaskMobile : theme.bgMaskDesktop;
+}
+function setActiveBg(name) {
+  if (BG_PROFILE === 'mobile') theme.bgMobile = name;
+  else theme.bgDesktop = name;
+  theme.bg = name;
+}
+function setActiveBgMask(v) {
+  if (BG_PROFILE === 'mobile') theme.bgMaskMobile = v;
+  else theme.bgMaskDesktop = v;
+  theme.bgMask = v;
+}
+function otherBgName() {
+  return BG_OTHER === 'mobile' ? theme.bgMobile : theme.bgDesktop;
+}
+function bgFileForProfile(profile, ext) {
+  return '主题背景-' + (profile === 'mobile' ? '手机' : '桌面') + (ext || '.jpg');
+}
+
 let themeTab = 'main';
 let bgUrl = null;
 let themeDirty = false;       // ★ 新增
@@ -71,7 +103,7 @@ function applyTheme() {
   r.setProperty('--th', editing.h);
 
   /* 背景蒙版强度 */
-  r.setProperty('--bg-mask', (theme.bgMask != null ? theme.bgMask : 45) / 100);
+  r.setProperty('--bg-mask', (activeBgMask() != null ? activeBgMask() : 45) / 100);
 }
 
 /* ---------- 读盘 / 写盘 ---------- */
@@ -94,8 +126,14 @@ async function readTheme() {
     theme.borderColor = t.borderColor || null; 
     theme.borderThickness = typeof t.borderThickness === 'number'
     ? t.borderThickness : 2;         
-    theme.bg = t.bg || null;
-    theme.bgMask = typeof t.bgMask === 'number' ? t.bgMask : 45;
+    const legacyBg = (typeof t.bg === 'string' && t.bg) ? t.bg : null;
+    const legacyMask = typeof t.bgMask === 'number' ? t.bgMask : 45;
+    theme.bgDesktop = (typeof t.bgDesktop === 'string' && t.bgDesktop) ? t.bgDesktop : legacyBg;
+    theme.bgMobile = (typeof t.bgMobile === 'string' && t.bgMobile) ? t.bgMobile : legacyBg;
+    theme.bgMaskDesktop = typeof t.bgMaskDesktop === 'number' ? t.bgMaskDesktop : legacyMask;
+    theme.bgMaskMobile = typeof t.bgMaskMobile === 'number' ? t.bgMaskMobile : legacyMask;
+    theme.bg = activeBgName();
+    theme.bgMask = activeBgMask();
     theme.dialogue = (t.dialogue !== false);
     return theme;
   } catch (e) { return theme; }
@@ -107,8 +145,13 @@ export async function writeTheme() {
     bubble: theme.bubble,
     borderColor: theme.borderColor,          
     borderThickness: theme.borderThickness,
-    bg: theme.bg,
-    bgMask: theme.bgMask,
+    bgDesktop: theme.bgDesktop,
+    bgMobile: theme.bgMobile,
+    bgMaskDesktop: theme.bgMaskDesktop,
+    bgMaskMobile: theme.bgMaskMobile,
+    /* 兼容旧版本：保留当前设备的背景，但新版本优先读 bgDesktop/bgMobile。 */
+    bg: activeBgName(),
+    bgMask: activeBgMask(),
     dialogue: theme.dialogue,
   }, null, 2));
   themeDirty = false;         // ★
@@ -144,7 +187,7 @@ async function applyBg(name) {
 export async function initTheme() {
   await readTheme();
   applyTheme();
-  await applyBg(theme.bg);
+  await applyBg(activeBgName());
 }
 
 /* ---------- 背景选择 + 裁剪 ---------- */
@@ -230,14 +273,15 @@ function buildCropUI(img) {
     octx.drawImage(img, srcX, srcY, srcW, srcH, 0, 0, outW, outH);
     out.toBlob(async blob => {
       if (!blob) { toast('导出失败'); return; }
-      const name = '主题背景.jpg';
+      const name = bgFileForProfile(BG_PROFILE, '.jpg');
       enqueue(async () => {
-        for (const old of ['主题背景.jpg', '主题背景.png', '主题背景.webp']) {
+        for (const ext of ['.jpg', '.png', '.webp']) {
+          const old = bgFileForProfile(BG_PROFILE, ext);
           if (old === name) continue;
           try { await Storage.removeEntry(Store.dir, old); } catch (e) {}
         }
         await Storage.writeBlob(Store.dir, name, blob);
-        theme.bg = name;
+        setActiveBg(name);
         await writeTheme();
         await applyBg(name);
       });
@@ -323,9 +367,9 @@ function openThemePop(anchor) {
       '</div>'
       : '') +
     '<div class="hs-row" style="margin-top:14px"><label>蒙版</label>' +
-      '<input type="range" id="thM" min="0" max="90" value="' + (theme.bgMask != null ? theme.bgMask : 45) + '">' +
-      '<span id="thMv">' + (theme.bgMask != null ? theme.bgMask : 45) + '</span></div>' +
-    '<div class="theme-row"><label>背景图片（保存在根目录）</label><div class="theme-btns">' +
+      '<input type="range" id="thM" min="0" max="90" value="' + (activeBgMask() != null ? activeBgMask() : 45) + '">' +
+      '<span id="thMv">' + (activeBgMask() != null ? activeBgMask() : 45) + '</span></div>' +
+    '<div class="theme-row"><label>背景图片（' + BG_LABEL + '端 · 保存在根目录）</label><div class="theme-btns">' +
     '<button id="bgPickBtn">选择图片</button>' +
     '<button id="bgClearBtn">移除背景</button></div></div>' +
     '<p class="theme-note">色相、气泡、描边各自独立保存（_主题.json），<br>换设备或重扫后依然生效。</p>';
@@ -395,8 +439,8 @@ function openThemePop(anchor) {
   const mask = pop.querySelector('#thM');
   if (mask) {
     mask.addEventListener('input', () => {
-      theme.bgMask = +mask.value;
-      pop.querySelector('#thMv').textContent = theme.bgMask;
+      setActiveBgMask(+mask.value);
+      pop.querySelector('#thMv').textContent = activeBgMask();
       applyTheme();
     });
     mask.addEventListener('change', save);
@@ -419,9 +463,12 @@ function openThemePop(anchor) {
 
   pop.querySelector('#bgPickBtn').addEventListener('click', () => bgPick.click());
   pop.querySelector('#bgClearBtn').addEventListener('click', () => {
+    const removed = activeBgName();
     enqueue(async () => {
-      if (theme.bg) { try { await Storage.removeEntry(Store.dir, theme.bg); } catch (e) {} }
-      theme.bg = null;
+      if (removed && removed !== otherBgName() && removed !== '主题背景.jpg') {
+        try { await Storage.removeEntry(Store.dir, removed); } catch (e) {}
+      }
+      setActiveBg(null);
       await writeTheme();
     });
     applyBg(null);

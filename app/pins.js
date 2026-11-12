@@ -13,13 +13,13 @@
  *   openPinPage()
  */
 
-import { $, esc, countLabel } from './utils.js';
+import { $, esc, countLabel, uid } from './utils.js';
 import { I } from './icons.js';
 import { Store } from './store.js';
 import { Mutate } from './mutate.js';
 import { fmtStamp } from './format.js';
-import { stripImages } from './md.js';
-import { writePins } from './io.js';
+import { stripImages, stripQuoteHeader } from './md.js';
+import { writePins, persistMonthOf } from './io.js';
 import { enqueue } from './writer.js';
 import { toast, openFullPage } from './ui.js';
 import { replaceMetaRow } from './meta-row.js';
@@ -27,7 +27,7 @@ import { renderEntryBody } from './entries-render.js';
 import { hydrateIn } from './image.js';
 import { scrollIntoViewIn, flashEl, captureViewportAnchor, restoreViewportAnchor } from './scroll-utils.js';
 import { jumpToRow } from './entries-jump.js';
-import { findNode } from './tree-utils.js';
+import { findNode, pathTitles } from './tree-utils.js';
 
 let _lastPinSig = null;
 let suppressPinSyncUntil = 0;
@@ -41,6 +41,88 @@ export function rebuildPinRowMap() {
   for (const row of box.querySelectorAll('.entry-row')) {
     if (row.dataset.eid) pinRowMap.set(row.dataset.eid, row);
   }
+}
+
+/* ---------- 置顶日志 ---------- */
+
+export function pinLogAction(text) {
+  /* 只看日志行末的动词，避免原消息预览里恰好有“取消置顶”。 */
+  return /被[^\n]*取消置顶\s*$/m.test(String(text || '')) ? 'unpin' : 'pin';
+}
+
+export function pinLogTarget(text) {
+  const m = String(text || '').match(/^:::pin\b[\s\S]*?#\^([^\]|]+)/);
+  return m ? m[1] : null;
+}
+
+export function makePinLogText({ topicRef, blockId, preview, at, actor, action }) {
+  const cleanRef = String(topicRef || '').replace(/[\r\n]/g, '').trim();
+  const cleanBlock = String(blockId || '').replace(/[\r\n]/g, '').trim();
+  let pv = stripQuoteHeader(stripImages(String(preview || '')))
+    .replace(/\s+/g, ' ')
+    .replace(/[\[\]|]/g, ' ')
+    .trim()
+    .slice(0, 80);
+  if (!pv) pv = '一条消息';
+  const who = String(actor || '我').replace(/[\r\n]/g, ' ').trim() || '我';
+  const verb = action === 'unpin' ? '取消置顶' : '置顶';
+  return ':::pin\n📌 [[' + cleanRef + '#^' + cleanBlock + '|' + pv + ']] 在 ' +
+    fmtStamp(at) + ' 被 ' + who + ' ' + verb + '\n:::';
+}
+
+/** 从 pin 事件里保留第一次/最后一次（按 action 分开）。 */
+export function firstLastByTarget(events, blockOf) {
+  const groups = new Map();
+  for (const ev of events || []) {
+    if (!ev || !ev.target || !ev.action) continue;
+    const bid = blockOf(ev.target);
+    if (!bid) continue;
+    const key = ev.action + '\u0000' + bid;
+    let g = groups.get(key);
+    if (!g) { g = { action: ev.action, blockId: bid, events: [] }; groups.set(key, g); }
+    g.events.push(ev);
+  }
+  const out = [];
+  for (const g of groups.values()) {
+    g.events.sort((a, b) => (a.at || 0) - (b.at || 0));
+    const first = g.events[0];
+    const last = g.events[g.events.length - 1];
+    out.push(first);
+    if (last !== first) out.push(last);
+  }
+  return out;
+}
+
+let D = { renderEntries: () => {}, renderAll: () => {} };
+export function wirePins(h) { Object.assign(D, h); }
+
+/* 写入/维护 :::pin 服务日志。每个 (目标, action) 最多保留首尾两条。 */
+function appendPinLog(n, e, action) {
+  const blockId = Mutate.entryBlockId(e);
+  const topicRef = n.topicId ? ('~' + n.topicId) : pathTitles(n);
+  const at = Date.now();
+  const text = makePinLogText({
+    topicRef, blockId, preview: e.text, at, actor: '我', action,
+  });
+  const r = Store.insertSorted(n, {
+    id: uid(), text, createdAt: at,
+    edited: false, editedAt: null,
+  });
+  r.entry._tzOffset = -new Date().getTimezoneOffset();
+  enqueue(() => persistMonthOf(n, r.entry.createdAt));
+
+  const logs = n.entries
+    .filter(x => String(x.text).startsWith(':::pin') &&
+      pinLogTarget(x.text) === blockId &&
+      pinLogAction(x.text) === action)
+    .sort((a, b) => a.createdAt - b.createdAt);
+  if (logs.length > 2) {
+    for (const old of logs.slice(1, -1)) {
+      Store.removeEntry(n, old.id);
+      enqueue(() => persistMonthOf(n, old.createdAt));
+    }
+  }
+  D.renderAll();
 }
 
 export function renderPins() {
@@ -91,6 +173,7 @@ export function toggleEntryPin(n, e) {
   const nowPinned = Mutate.togglePin(n, e);
   toast(nowPinned ? '已置顶，右栏顶部可查看' : '已取消置顶');
   enqueue(() => writePins(n));
+  appendPinLog(n, e, nowPinned ? 'pin' : 'unpin');
 
   const row = document.querySelector('#entries .entry-row[data-eid="' + e.id + '"]');
   if (row) replaceMetaRow(row, e, n);

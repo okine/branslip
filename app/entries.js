@@ -45,7 +45,7 @@ import {
   wireOps,
 } from './entries-ops.js';
 import {
-  renderPins, toggleEntryPin, rebuildPinRowMap, syncPinCursorFromScroll,
+  renderPins, toggleEntryPin, rebuildPinRowMap, syncPinCursorFromScroll, wirePins,
 } from './pins.js';
 import { updateDateJump } from './entries-date.js';
 import './ref-preview.js';
@@ -161,6 +161,12 @@ async function unloadNow() {
   }
   await waitForIdle();
   if (Store.ui.selectedId !== n.id) return;
+  clearMultiSelect();
+  Store.ui.pinCursor = null;
+  if (Store.ui.flashEntry && n.entries.some(e => e.id === Store.ui.flashEntry)) {
+    Store.ui.flashEntry = null;
+  }
+  for (const e of n.entries) Store.ui.altIndex.delete(e.id);
   const removed = unloadSilentTopic(n);
   Store.rebuildIndex();
   resetMeta();
@@ -225,7 +231,7 @@ export function renderEntries() {
   Store.ui.loadedEnd = total;
   ensureGlobalMeta()
 
-  const foldCover = Mutate.buildFoldCover(n, start);
+  const foldCover = Mutate.buildFoldCover(n, start, Store.dataRevision);
   /* 变体分组：锚点必须在窗口内，否则变体按普通记录渲染（见 buildAltGroups） */
   const { altOf, isAlt } = buildAltGroups(n, start, total);
 
@@ -546,6 +552,11 @@ $('#entries').addEventListener('contextmenu', e => {
 });
 
 $('#entries').addEventListener('dblclick', e => {
+  /* 所有按钮/链接/输入控件/计数徽章/翻页/引用头都不进入回复态。 */
+  if (e.target.closest(
+    'button, a, input, textarea, select, label, [role="button"], [contenteditable="true"], ' +
+    '.meta-row, .tools, .fold-ctrl, .md-mirror, .md-quote.collapsible, .relevance-head'
+  )) return;
   if (e.target.closest('img.eimg')) return;
   if (e.target.closest('a')) return;
   if (e.target.closest('.md-pre-copy')) return;
@@ -582,6 +593,11 @@ $('#multiBar').addEventListener('click', e => {
 
 // entries.js 末尾
 
+
+wirePins({
+  renderEntries,
+  renderAll: (...a) => D.renderAll(...a),
+});
 
 wireOps({
   replaceRow,

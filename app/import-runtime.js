@@ -584,18 +584,30 @@ function collectTopicIdMap(topic, map) {
   for (const br of topic.branches) collectTopicIdMap(br, map);
 }
 
-function processReplyHeaders(topic, topicIdMap, parentInfo) {
+function snapshotRawTexts(topic, map) {
+  for (const e of topic.entries) map.set(e, String(e.text || ''));
+  for (const br of topic.branches) snapshotRawTexts(br, map);
+}
+
+function processReplyHeaders(topic, topicIdMap, parentInfo, rawTexts) {
+  if (!rawTexts) {
+    rawTexts = new Map();
+    snapshotRawTexts(topic, rawTexts);
+  }
   for (let i = 0; i < topic.entries.length; i++) {
     const e = topic.entries[i];
     let header = '';
+    let branchHeader = '';
 
-    if (i === 0 && parentInfo && !e._replyTo) {
+    if (i === 0 && parentInfo && !e._altOf) {
       /* 分支首条是 user：如果它和父话题里那条用户消息**不一样**，
          说明这是"改了提问"产生的新分支，标出来更直观。 */
       const parentText = String(parentInfo.parentText || '').trim();
-      const curText = String(e.text || '').trim();
-      const edited = parentText && curText && parentText !== curText;
-      header = '> 📌 此分支从「' + parentInfo.parentTitle + '」分出' +
+      const curText = String(rawTexts.get(e) || e.text || '').trim();
+      /* 只有分支第一条是 user 且内容不同，才是“改了提问”；
+         首条是 assistant 通常只是另一个回答分支，不能说原消息被修改。 */
+      const edited = !e._replyTo && parentText && curText && parentText !== curText;
+      branchHeader = '> 📌 此分支从「' + parentInfo.parentTitle + '」分出' +
                (edited ? '（原消息修改后，出现新分支）' : '') + '\n' +
                '> [[~' + parentInfo.parentTopicId + '#^' +
                parentInfo.parentBlockId + ']]\n\n';
@@ -621,6 +633,7 @@ function processReplyHeaders(topic, topicIdMap, parentInfo) {
       delete e._replyTo;
     }
 
+    if (branchHeader) header = branchHeader + header;
     if (header) e.text = header + e.text;
   }
 
@@ -633,10 +646,11 @@ function processReplyHeaders(topic, topicIdMap, parentInfo) {
         parentTitle: topic.title,
         parentTopicId: fromTopicId,
         parentBlockId: entryBlockId(fromUser),
-        parentText: fromUser.text,      /* 用来判断分支是不是"改了提问"产生的 */
+        /* 用处理引用头之前的原文比较，避免父消息的回复头把“同一条提问”误判成修改过。 */
+        parentText: rawTexts.get(fromUser) || fromUser.text,
       };
     }
-    processReplyHeaders(br, topicIdMap, parentInfo);
+    processReplyHeaders(br, topicIdMap, parentInfo, rawTexts);
   }
 }
 
@@ -761,11 +775,38 @@ async function writeTopic(parentDir, topic, source, opts) {
     }
   }
 
+  const topicCreatedAt = fmtStamp(topic.createdAtMs);
   const node = {
     title: dirName,
     _dir: dir,
     entries: topic.entries,
   };
+  /* 把导入的置顶/取消置顶写成 :::pin 服务记录；每个目标每种动作只保留首尾两条。 */
+  const pinEvents = Array.isArray(topic._pinEvents) ? topic._pinEvents : [];
+  if (pinEvents.length) {
+    const ref = '~' + topicCreatedAt;
+    const logs = firstLastByTarget(pinEvents, target => entryBlockId(target));
+    for (const ev of logs) {
+      const tgt = ev.target;
+      if (!tgt) continue;
+      topic.entries.push({
+        id: uid(),
+        text: makePinLogText({
+          topicRef: ref,
+          blockId: entryBlockId(tgt),
+          preview: tgt.text,
+          at: ev.at || Date.now(),
+          actor: ev.actor || '我',
+          action: ev.action,
+        }),
+        createdAt: ev.at || Date.now(),
+        edited: false,
+        editedAt: null,
+        _tzOffset: -new Date().getTimezoneOffset(),
+      });
+    }
+    topic.entries.sort((a, b) => a.createdAt - b.createdAt);
+  }
   /* Telegram 等来源带了置顶信息：只保留确实存在于本话题的 createdAt */
   const pinMs = Array.isArray(topic._importPins) ? topic._importPins : [];
   const byMs = new Map(node.entries.map(e => [e.createdAt, e]));
@@ -775,7 +816,7 @@ async function writeTopic(parentDir, topic, source, opts) {
   stats.entries += node.entries.length;
   stats.pins += node.pinned.length;
   for (const e of node.entries) {
-    if (String(e.text || '').startsWith(':::system')) stats.services++;
+    if (/^:::(?:system|pin)\b/.test(String(e.text || ''))) stats.services++;
   }
   const months = new Set(topic.entries.map(e => monthKeyOfEntry(e)));
   for (const mk of months) {
@@ -785,7 +826,6 @@ async function writeTopic(parentDir, topic, source, opts) {
     });
   }
 
-  const topicCreatedAt = fmtStamp(topic.createdAtMs);
   await runStep(opts, async (rep) => {
     await atomicWriteText(dir, '_话题.json', JSON.stringify({
       createdAt: topicCreatedAt,

@@ -409,6 +409,29 @@ export function executeDelete(eid, n, ent) {
  * 移动
  * ============================================================ */
 
+/* 移动后裁剪源话题的折叠区间：保留仍有记录的范围，删掉空折叠。 */
+function pruneFoldsAfterMove(node) {
+  if (!node || !Array.isArray(node.folds) || !node.folds.length) return false;
+  const before = node.folds.length;
+  const next = [];
+  for (const f of node.folds) {
+    if (!f || !Number.isFinite(f.from) || !Number.isFinite(f.to)) continue;
+    const inside = node.entries.filter(e => e.createdAt >= f.from && e.createdAt <= f.to);
+    if (!inside.length) continue;
+    next.push({
+      ...f,
+      from: inside[0].createdAt,
+      to: inside[inside.length - 1].createdAt,
+    });
+  }
+  if (next.length === before &&
+      next.every((f, i) => f.from === node.folds[i].from && f.to === node.folds[i].to)) {
+    return false;
+  }
+  node.folds = next;
+  return true;
+}
+
 export function moveEntryTo(ent, fromNode) {
   openMovePicker('把这条记录移到哪个话题下？', [], async targetId => {
     const t = findNode(targetId);
@@ -424,6 +447,7 @@ export function moveEntryTo(ent, fromNode) {
 
     const wasPinned = Mutate.isPinned(fromNode, ent);
     const pinIdx = wasPinned ? fromNode.pinned.indexOf(ent.createdAt) : -1;
+    const foldsBefore = fromNode.folds.map(f => ({ ...f }));
 
     /* 1. 内存：条目搬家 */
     fromNode.entries.splice(oldIdx, 1);
@@ -431,6 +455,7 @@ export function moveEntryTo(ent, fromNode) {
     while (i > 0 && t.entries[i - 1].createdAt > ent.createdAt) i--;
     t.entries.splice(i, 0, ent);
     Store.indexEntry(ent, t);
+    const foldsChanged = pruneFoldsAfterMove(fromNode);
 
     /* 2. 内存：置顶跟着走（立刻，保证 renderAll 正确） */
     if (wasPinned) {
@@ -438,7 +463,8 @@ export function moveEntryTo(ent, fromNode) {
       Mutate.addPin(t, ent);
     }
 
-    const paths = imageRefs(ent.text).map(r => r.path);
+    const paths = imageRefs(ent.text).map(r => r.path)
+      .filter(p => p && p.startsWith('attachments/'));
 
     enqueue(async () => {
       try {
@@ -457,6 +483,7 @@ export function moveEntryTo(ent, fromNode) {
         }
         await persistMonthOf(fromNode, ent.createdAt);
         await persistMonthOf(t, ent.createdAt);
+        if (foldsChanged) await writeFolds(fromNode);
         if (wasPinned) {
           await writePins(fromNode);
           await writePins(t);
@@ -469,6 +496,8 @@ export function moveEntryTo(ent, fromNode) {
         fromNode.entries.splice(at, 0, ent);
         Store.indexEntry(ent, fromNode);
 
+        fromNode.folds = foldsBefore;
+        try { await writeFolds(fromNode); } catch (e2) {}
         /* 回滚置顶 */
         if (wasPinned) {
           Mutate.removePin(t, ent);
@@ -476,6 +505,13 @@ export function moveEntryTo(ent, fromNode) {
             const pi = Math.min(Math.max(pinIdx, 0), fromNode.pinned.length);
             fromNode.pinned.splice(pi, 0, ent.createdAt);
           }
+        }
+        /* 失败可能发生在月份文件已经写了一半之后，尽力把两边磁盘状态写回。 */
+        try { await persistMonthOf(fromNode, ent.createdAt); } catch (e2) {}
+        try { await persistMonthOf(t, ent.createdAt); } catch (e2) {}
+        if (wasPinned) {
+          try { await writePins(fromNode); } catch (e2) {}
+          try { await writePins(t); } catch (e2) {}
         }
 
         D.renderAll();
@@ -520,6 +556,7 @@ export function moveSelectedTo() {
         was: Mutate.isPinned(fromNode, e),
         pinIdx: fromNode.pinned.indexOf(e.createdAt),
       }));
+      const foldsBefore = fromNode.folds.map(f => ({ ...f }));
 
       /* 1. 内存搬家 */
       for (const e of ents) {
@@ -535,6 +572,8 @@ export function moveSelectedTo() {
         }
       }
 
+      const foldsChanged = pruneFoldsAfterMove(fromNode);
+
       const paths = [];
       for (const e of ents) {
         for (const r of imageRefs(e.text)) {
@@ -549,6 +588,7 @@ export function moveSelectedTo() {
           }
           for (const e of ents) await persistMonthOf(fromNode, e.createdAt);
           for (const e of ents) await persistMonthOf(target, e.createdAt);
+          if (foldsChanged) await writeFolds(fromNode);
           if (pinInfo.some(x => x.was)) {
             await writePins(fromNode);
             await writePins(target);
@@ -562,6 +602,8 @@ export function moveSelectedTo() {
             Store.indexEntry(e, fromNode);
           }
           fromNode.entries.sort((a, b) => a.createdAt - b.createdAt);
+          fromNode.folds = foldsBefore;
+          try { await writeFolds(fromNode); } catch (e2) {}
           for (const x of pinInfo) {
             if (!x.was) continue;
             Mutate.removePin(target, x.e);
@@ -570,8 +612,16 @@ export function moveSelectedTo() {
               fromNode.pinned.splice(pi, 0, x.e.createdAt);
             }
           }
+          for (const e of ents) {
+            try { await persistMonthOf(fromNode, e.createdAt); } catch (e2) {}
+            try { await persistMonthOf(target, e.createdAt); } catch (e2) {}
+          }
+          if (pinInfo.some(x => x.was)) {
+            try { await writePins(fromNode); } catch (e2) {}
+            try { await writePins(target); } catch (e2) {}
+          }
           D.renderAll();
-          toast('转移失败，已恢复：' + ((err && err.message) || err));
+          toast('移动失败，已恢复：' + ((err && err.message) || err));
           throw err;
         }
       });
