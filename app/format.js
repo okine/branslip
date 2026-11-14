@@ -24,7 +24,7 @@
 /* entry 正文的转义。写盘唯一入口。
  * 顺序：先保护已有的 \#，再转义行首 #。
  * 顺序不能反 —— 反了会把 "\\#foo" 里的 "\#" 也二次转义。 */
-/* 从 'YYYY-MM-DD HH:mm:ss.mmm [+HH:MM]' 或含该前缀的任意字符串里
+/* 从 'YYYY-MM-DDTHH:mm:ss.mmm[+HH:MM]' 或含该前缀的任意字符串里
  * 截出 blockId 形式：'YYYY-MM-DD_HH-mm-ss-mmm'。
  * 用于 entryBlockId 从 _writeStamp 派生。 */
 function stampToBlockId(s) {
@@ -59,14 +59,14 @@ function tzOffsetFromStamp(s) {
   return sign * (hh * 60 + mm);
 }
 
-/* 毫秒 + 时区偏移 → 'YYYY-MM-DD HH:mm:ss.mmm±HH:MM' */
+/* 毫秒 + 时区偏移 → 'YYYY-MM-DDTHH:mm:ss.mmm±HH:MM' */
 function fmtStampAtTz(ms, tzMin) {
   const d = new Date(ms + tzMin * 60000);
   const p = n => String(n).padStart(2, '0');
   const sign = tzMin >= 0 ? '+' : '-';
   const oh = p(Math.floor(Math.abs(tzMin) / 60));
   const om = p(Math.abs(tzMin) % 60);
-  return d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate()) + ' ' +
+  return d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate()) + 'T' +
          p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()) + ':' + p(d.getUTCSeconds()) + '.' +
          String(d.getUTCMilliseconds()).padStart(3, '0') + sign + oh + ':' + om;
 }
@@ -87,7 +87,7 @@ function localIdFromMs(ms) {
  * 非法输入返回 null。 */
 function normalizeRawStamp(raw) {
   if (!raw || typeof raw !== 'string') return null;
-  let s = raw.trim().replace('T', ' ');
+  let s = raw.trim().replace(/^(\d{4}-\d{2}-\d{2})[ tT]/, '$1T');
 
   const tzm = s.match(/(Z|[+-]\d{2}:?\d{2})\s*$/i);
   let tz = '';
@@ -103,7 +103,7 @@ function normalizeRawStamp(raw) {
     s += '.000';
   }
 
-  if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}$/.test(s)) return null;
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}$/.test(s)) return null;
   return s + tz;
 }
 
@@ -161,7 +161,7 @@ function unescapeEntryBody(t) {
 }
 function fmtStampLocal(ts) {
   const d = new Date(ts), p = n => String(n).padStart(2, '0');
-  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' +
     p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()) + '.' +
     String(d.getMilliseconds()).padStart(3, '0');
 }

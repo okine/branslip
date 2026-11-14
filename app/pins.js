@@ -17,7 +17,7 @@ import { $, esc, countLabel, uid } from './utils.js';
 import { I } from './icons.js';
 import { Store } from './store.js';
 import { Mutate } from './mutate.js';
-import { fmtStamp } from './format.js';
+import { fmtStamp, topicRefIdFromStamp } from './format.js';
 import { stripImages, stripQuoteHeader } from './md.js';
 import { writePins, persistMonthOf } from './io.js';
 import { enqueue } from './writer.js';
@@ -56,7 +56,11 @@ export function pinLogTarget(text) {
 }
 
 export function makePinLogText({ topicRef, blockId, preview, at, actor, action }) {
-  const cleanRef = String(topicRef || '').replace(/[\r\n]/g, '').trim();
+  let cleanRef = String(topicRef || '').replace(/[\r\n]/g, '').trim();
+  if (cleanRef.startsWith('~')) {
+    const norm = topicRefIdFromStamp(cleanRef.slice(1));
+    if (norm) cleanRef = '~' + norm;
+  }
   const cleanBlock = String(blockId || '').replace(/[\r\n]/g, '').trim();
   let pv = stripQuoteHeader(stripImages(String(preview || '')))
     .replace(/\s+/g, ' ')

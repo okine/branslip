@@ -20,6 +20,7 @@ import { updateTopicMeta } from './io.js';
 import { enqueue } from './writer.js';
 import { openFullPage, toast, confirmDialog } from './ui.js';
 import { createImageURLLoader, openTopicLightbox } from './image.js';
+import { jumpToRow } from './entries-jump.js';
 
 /* ---------- 收集 ---------- */
 
@@ -45,7 +46,100 @@ function collectMedia(node) {
       stickers.push({ noImage: true, emoji: (s[1] || '贴纸').trim(), entry: e });
     }
   }
-  return { images, stickers };
+  /* 最近的在最前；同一消息内的多张图保持正文顺序。 */
+  const newestFirst = (a, b) => (b.entry.createdAt || 0) - (a.entry.createdAt || 0);
+  images.sort(newestFirst);
+  stickers.sort(newestFirst);
+  const links = collectLinks(node);
+  return { images, stickers, links };
+}
+
+/* ---------- 链接 ---------- */
+
+const MD_LINK_RE = /\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)/g;
+const BARE_LINK_RE = /https?:\/\/[^\s<>"'）】，。；：！？]+/g;
+
+function stripLinkNoise(text) {
+  return String(text || '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`[^`\n]*`/g, ' ')
+    .replace(/:::think[\s\S]*?:::/g, ' ')
+    .replace(/:::raw[\s\S]*?:::/g, ' ')
+    .replace(/:::pin[\s\S]*?:::/g, ' ')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\[\[[^\]]*\]\]/g, ' ');
+}
+
+function cleanLinkUrl(raw) {
+  let u = String(raw || '').trim();
+  u = u.replace(/[.,;:!?，。；：！？、]+$/g, '');
+  u = u.replace(/[)\]】》]+$/g, '');
+  return u;
+}
+
+function extractLinks(text) {
+  const s = stripLinkNoise(text);
+  const found = [];
+  s.replace(MD_LINK_RE, (m, label, url) => {
+    found.push({ url: cleanLinkUrl(url), label: String(label || '').trim() });
+    return ' ';
+  });
+  const rest = s.replace(MD_LINK_RE, ' ');
+  for (const m of rest.matchAll(BARE_LINK_RE)) {
+    found.push({ url: cleanLinkUrl(m[0]), label: '' });
+  }
+  const out = [], seen = new Set();
+  for (const f of found) {
+    const url = cleanLinkUrl(f.url);
+    if (!/^https?:\/\//i.test(url) || seen.has(url)) continue;
+    let host = '';
+    try { host = new URL(url).hostname.replace(/^www\./i, ''); }
+    catch (e) { continue; }
+    if (!host) continue;
+    seen.add(url);
+    out.push({ url, label: f.label || url, host });
+  }
+  return out;
+}
+
+function linkPreview(text) {
+  return stripLinkNoise(text)
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '[图片]')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 100);
+}
+
+function collectLinks(node) {
+  const groups = [];
+  for (const e of node.entries) {
+    const urls = extractLinks(e.text);
+    if (!urls.length) continue;
+    groups.push({ entry: e, urls, preview: linkPreview(e.text) });
+  }
+  return groups.sort((a, b) => (b.entry.createdAt || 0) - (a.entry.createdAt || 0));
+}
+
+function renderLinkList(media) {
+  if (!media.links.length) {
+    return '<div class="topic-empty">这个话题还没有链接</div>';
+  }
+  return '<div class="topic-links">' + media.links.map(g => {
+    const links = g.urls.map(u =>
+      '<a class="topic-link-url" href="' + esc(u.url) + '" target="_blank" rel="noopener"' +
+        ' title="' + esc(u.url) + '">' + esc(u.label) + '</a>' +
+      '<span class="topic-link-host-inline">' + esc(u.host) + '</span>'
+    ).join('');
+    return '<div class="topic-link-row">' +
+      '<div class="topic-link-head">' +
+        '<span class="topic-link-host">' + esc(g.urls[0].host) + '</span>' +
+        '<span class="topic-link-time">' + esc(fmtStamp(g.entry.createdAt)) + '</span>' +
+        '<button type="button" class="topic-link-locate" data-link-eid="' + esc(g.entry.id) + '">定位</button>' +
+      '</div>' +
+      '<div class="topic-link-urls">' + links + '</div>' +
+      (g.preview ? '<div class="topic-link-src">' + esc(g.preview) + '</div>' : '') +
+    '</div>';
+  }).join('') + '</div>';
 }
 
 function statHTML(label, value) {
@@ -59,7 +153,8 @@ const MEDIA_BATCH = 80;
 
 function renderMedia(media, state) {
   const pending = !!state.pending;   /* 静默话题：记录尚未加载 */
-  const list = state.tab === 'sticker' ? media.stickers : media.images;
+  const list = state.tab === 'sticker' ? media.stickers
+    : state.tab === 'link' ? media.links : media.images;
   const total = list.length;
   const shown = Math.min(total, state.shown ? state.shown[state.tab] : MEDIA_BATCH);
   const slice = list.slice(0, shown);
@@ -71,13 +166,17 @@ function renderMedia(media, state) {
           '" data-media-tab="image">图片 · ' + (pending ? '未加载' : media.images.length) + '</button>' +
         '<button type="button" class="media-tab' + (state.tab === 'sticker' ? ' on' : '') +
           '" data-media-tab="sticker">贴纸 · ' + (pending ? '未加载' : media.stickers.length) + '</button>' +
+        '<button type="button" class="media-tab' + (state.tab === 'link' ? ' on' : '') +
+          '" data-media-tab="link">链接 · ' + (pending ? '未加载' : media.links.length) + '</button>' +
       '</div>' +
     '</div>';
 
   if (pending) {
-    return tabs + '<div class="topic-empty">静默话题：记录尚未加载，图片和贴纸暂不统计。' +
+    return tabs + '<div class="topic-empty">静默话题：记录尚未加载，图片、贴纸和链接暂不统计。' +
       '<br>打开话题并点击「加载记录」后会显示在这里。</div>';
   }
+
+  if (state.tab === 'link') return tabs + renderLinkList(media);
 
   const grid = slice.map((it, i) => {
     const idx = i;
@@ -95,7 +194,7 @@ function renderMedia(media, state) {
   }).join('');
 
   const empty = '<div class="topic-empty">这个话题还没有' +
-    (state.tab === 'sticker' ? '贴纸' : '图片') + '</div>';
+    (state.tab === 'sticker' ? '贴纸' : state.tab === 'link' ? '链接' : '图片') + '</div>';
 
   return tabs + (total
     ? '<div class="topic-media">' + grid + '</div>' +
@@ -184,7 +283,9 @@ export function openTopicDetails(node) {
 
   const media = collectMedia(node);
   const mediaState = {
-    tab: media.images.length ? 'image' : (media.stickers.length ? 'sticker' : 'image'),
+    tab: media.images.length ? 'image'
+      : (media.stickers.length ? 'sticker'
+      : (media.links.length ? 'link' : 'image')),
     pending: !!(node.silent && !node._entriesLoaded),
     shown: { image: MEDIA_BATCH, sticker: MEDIA_BATCH },
   };
@@ -342,7 +443,10 @@ export function openTopicDetails(node) {
       const tabBtn = ev.target.closest('[data-media-tab]');
       if (tabBtn) {
         const t = tabBtn.dataset.mediaTab;
-        if (t === 'image' || t === 'sticker') { mediaState.tab = t; api.redraw(); }
+        if (t === 'image' || t === 'sticker' || t === 'link') {
+          mediaState.tab = t;
+          api.redraw();
+        }
         return;
       }
 
@@ -374,6 +478,17 @@ export function openTopicDetails(node) {
         return;
       }
 
+      /* 链接：定位原消息 */
+      const linkLoc = ev.target.closest('[data-link-eid]');
+      if (linkLoc) {
+        const entry = node.entries.find(e => e.id === linkLoc.dataset.linkEid);
+        if (entry) {
+          jumpToRow(node, entry.id);
+          api.close();
+        }
+        return;
+      }
+
       /* 缩略图 → 灯箱 */
       const th = ev.target.closest('.ti-thumb[data-img-path]');
       if (th) {
@@ -381,7 +496,7 @@ export function openTopicDetails(node) {
         const eid = th.dataset.imgEid;
         const entry = node.entries.find(e => e.id === eid)
           || media.images.concat(media.stickers).find(it => it.path === path)?.entry;
-        if (entry) openTopicLightbox(node, entry, path, () => api.close());
+        if (entry) openTopicLightbox(node, entry, path, () => api.close(), { newestFirst: true });
         return;
       }
     },

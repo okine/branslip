@@ -436,7 +436,7 @@ export function parseEntries(text) {
         /* ★ 新增：还原磁盘上的原始时间串（含原时区），
           保证 entryBlockId 与写盘时生成的引用稳定一致 */
         _writeStamp:
-        m[1] + '-' + m[2] + '-' + m[3] + ' ' +
+        m[1] + '-' + m[2] + '-' + m[3] + 'T' +
         m[4] + ':' + m[5] +
         (m[6] != null ? ':' + m[6] : ':00') +
         (m[7] != null ? '.' + String(m[7]).padEnd(3, '0') : '.000') +

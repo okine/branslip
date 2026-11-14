@@ -449,7 +449,7 @@ export function wireImage(h) { Object.assign(D, h); }
  * 话题图片灯箱
  * ============================================================ */
 
-export function openTopicLightbox(node, curEntry, curPath, afterLocate) {
+export function openTopicLightbox(node, curEntry, curPath, afterLocate, opts) {
   if (!node || !node._dir) return;
 
   /* 1. 按记录顺序、文本顺序收集 { path, entry } */
@@ -461,6 +461,9 @@ export function openTopicLightbox(node, curEntry, curPath, afterLocate) {
     }
   }
   if (!all.length) return;
+  if (opts && opts.newestFirst) {
+    all.sort((a, b) => (b.entry.createdAt || 0) - (a.entry.createdAt || 0));
+  }
 
   /* 2. 定位被点击那张（entry + path 双匹配，避免同图重复时错位） */
   let idx = all.findIndex(x => x.entry === curEntry && x.path === curPath);

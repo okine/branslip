@@ -110,6 +110,13 @@ export function closeMenu() {
 
 export function hasMenu()   { return menuRoot.childElementCount > 0; }
 
+/* 任何滚动容器一滚动就收起菜单；菜单是临时操作层，不能跟着内容漂。 */
+if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+  document.addEventListener('scroll', () => {
+    if (hasMenu()) closeMenu();
+  }, { capture: true, passive: true });
+}
+
 /**
  * 「再点一次同一个按钮」→ 收起它开的菜单，返回 true（调用方直接 return）。
  * 用记录下来的锚点判断，不依赖菜单此刻是否还在 DOM 里。

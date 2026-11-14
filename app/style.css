@@ -1360,6 +1360,25 @@ label.pick-row input[type=checkbox]{flex:none;accent-color:var(--accent);width:1
 }
 .ti-thumb:hover{outline:2px solid var(--accent);outline-offset:-2px}
 
+/* 详情页 · 链接列表 */
+.topic-links{width:min(720px,94vw);display:flex;flex-direction:column;gap:8px}
+.topic-link-row{background:var(--white);border:1px solid var(--line-soft);border-radius:12px;
+  padding:10px 12px;box-shadow:0 2px 8px rgba(43,38,28,.035)}
+.topic-link-head{display:flex;align-items:center;gap:8px;min-width:0}
+.topic-link-host{font-size:12.5px;font-weight:700;color:var(--accent);min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.topic-link-time{font-size:10.5px;color:var(--ink3);margin-left:auto;white-space:nowrap}
+.topic-link-locate{border:1px solid var(--line);background:transparent;color:var(--ink3);
+  font-size:10.5px;border-radius:99px;padding:2px 8px;cursor:pointer;flex:none}
+.topic-link-locate:hover{color:var(--accent);border-color:var(--accent)}
+.topic-link-urls{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;margin-top:6px}
+.topic-link-url{font-size:12.5px;color:var(--ink);text-decoration:underline;
+  text-decoration-color:rgba(22,101,88,.35);word-break:break-all;max-width:100%}
+.topic-link-url:hover{color:var(--accent);text-decoration-color:var(--accent)}
+.topic-link-host-inline{font-size:10.5px;color:var(--ink3);opacity:.8}
+.topic-link-src{margin-top:6px;font-size:11.5px;line-height:1.55;color:var(--ink3);
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+
 
 /* 拾之 / 置顶页里的来源标签 /时之箭 */
 .src-tag{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;

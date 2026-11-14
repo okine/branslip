@@ -463,7 +463,7 @@ test('freezeWriteStamps: 每条 entry 拿到 _writeStamp（带 tzOffset 后缀�
   assert.ok(t.entries[0]._writeStamp);
   assert.ok(t.entries[1]._writeStamp);
   assert.match(t.entries[0]._writeStamp,
-    /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\+08:00$/);
+    /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}\+08:00$/);
 });
 
 test('freezeWriteStamps: 已有 _writeStamp 不被覆盖', () => {

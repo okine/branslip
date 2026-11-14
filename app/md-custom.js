@@ -29,6 +29,7 @@
  */
 
 import { esc } from './utils.js';
+import { topicRefIdFromStamp } from './format.js';
 import katex from './vendor/katex/katex.mjs';
 
 /* :::pin 的内部只允许转义文本 + 引用链接；不嵌套递归 renderMD。 */
@@ -38,9 +39,14 @@ function pinBodyHTML(body) {
     /\[\[((?:~[A-Za-z0-9_\-]+)|[^\[\]|#^]+)#\^([A-Za-z0-9_\-]+)(?:\|([^\[\]]*))?\]\]/g,
     (m, tid, block, alias) => {
       const label = alias && alias.trim() ? alias : '→ 消息';
-      const attrs = tid.startsWith('~')
-        ? ' data-topic-id="' + esc(tid.slice(1)) + '"'
-        : ' data-path="' + esc(tid) + '"';
+      let attrs;
+      if (tid.startsWith('~')) {
+        const raw = tid.slice(1);
+        const norm = topicRefIdFromStamp(raw) || raw;
+        attrs = ' data-topic-id="' + esc(norm) + '"';
+      } else {
+        attrs = ' data-path="' + esc(tid) + '"';
+      }
       return '<a class="md-ref"' + attrs + ' data-block="' + esc(block) + '">→ ' +
         esc(label) + '</a>';
     }

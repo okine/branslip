@@ -22,7 +22,7 @@ import { Store } from './store.js';
 import { resolveFile } from './io.js';
 import { atomicWriteText } from './writeSecurity.js';
 import { enqueue } from './writer.js';
-import { toast, closeMenu, wireOutsideClose } from './ui.js';
+import { toast, closeMenu, wireOutsideClose, makeEscapable } from './ui.js';
 
 /* ---------- 主题状态 ---------- */
 
@@ -325,7 +325,10 @@ function buildCropUI(img) {
 /* ---------- 主题弹窗 ---------- */
 
 let themePopAC = null;
+let themePopClose = null;
 function openThemePop(anchor) {
+  if (themePopClose) themePopClose();
+  if (themePopAC) { themePopAC.abort(); themePopAC = null; }
   closeMenu();
   if (themePopAC) { themePopAC.abort(); themePopAC = null; } 
   document.querySelectorAll('.theme-pop').forEach(p => p.remove());
@@ -369,10 +372,10 @@ function openThemePop(anchor) {
     '<div class="hs-row" style="margin-top:14px"><label>蒙版</label>' +
       '<input type="range" id="thM" min="0" max="90" value="' + (activeBgMask() != null ? activeBgMask() : 45) + '">' +
       '<span id="thMv">' + (activeBgMask() != null ? activeBgMask() : 45) + '</span></div>' +
-    '<div class="theme-row"><label>背景图片（' + BG_LABEL + '端 · 保存在根目录）</label><div class="theme-btns">' +
+    '<div class="theme-row"><label>背景图片（' + BG_LABEL + '端）</label><div class="theme-btns">' +
     '<button id="bgPickBtn">选择图片</button>' +
     '<button id="bgClearBtn">移除背景</button></div></div>' +
-    '<p class="theme-note">色相、气泡、描边各自独立保存（_主题.json），<br>换设备或重扫后依然生效。</p>';
+    '<p class="theme-note">色相、气泡、描边各自独立保存，<br>换设备或重扫后依然生效。</p>';
   document.body.appendChild(pop);
 
   const r = (anchor || $('#themeBtn') || $('#tbTheme')).getBoundingClientRect();
@@ -449,7 +452,8 @@ function openThemePop(anchor) {
   pop.querySelector('.theme-tabs').addEventListener('click', e => {
     const b = e.target.closest('[data-tab]'); if (!b) return;
     themeTab = b.dataset.tab;
-    pop.remove(); openThemePop(anchor);
+    closePop();
+    openThemePop(anchor);
   });
 
   const rst = pop.querySelector('#thReset');
@@ -458,7 +462,8 @@ function openThemePop(anchor) {
     applyTheme();
     themeDirty = true;
     enqueue(() => writeTheme());
-    pop.remove(); openThemePop(anchor);
+    closePop();
+    openThemePop(anchor);
   });
 
   pop.querySelector('#bgPickBtn').addEventListener('click', () => bgPick.click());
@@ -476,10 +481,14 @@ function openThemePop(anchor) {
   });
 
   themePopAC = new AbortController();
-  wireOutsideClose(pop, () => {
+  const closePop = makeEscapable(() => {
     pop.remove();
     if (themePopAC) { themePopAC.abort(); themePopAC = null; }
-  }, themePopAC.signal, t => (
+    themePopClose = null;
+  });
+  themePopClose = closePop;
+  document.addEventListener('scroll', closePop, { capture: true, passive: true, signal: themePopAC.signal });
+  wireOutsideClose(pop, closePop, themePopAC.signal, t => (
     (anchor && (t === anchor || anchor.contains(t))) ||
     t.closest('#tbTheme') || t.closest('#themeBtn')
   ));
@@ -490,7 +499,7 @@ function openThemePop(anchor) {
 
 export async function openThemePanel(anchor) {
   /* 主题面板开着时再点同一个按钮 → 收起（见 utils.togglePop） */
-  if (togglePop(anchor, '.theme-pop')) return;
+  if (togglePop(anchor, '.theme-pop', () => { if (themePopClose) themePopClose(); })) return;
   if (!themeDirty) await readTheme();
   themeTab = 'main';
   openThemePop(anchor);

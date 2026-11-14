@@ -82,7 +82,7 @@ test('stampToBlockId: 从磁盘时间戳派生 blockId', () => {
 test('topicRefIdFromStamp: 前缀截取，不受时区影响', () => {
   const a = topicRefIdFromStamp('2025-01-01 10:00:00.000+08:00');
   const b = topicRefIdFromStamp('2025-01-01 10:00:00.000-05:00');
-  const c = topicRefIdFromStamp('2025-01-01 10:00:00.000Z');
+  const c = topicRefIdFromStamp('2025-01-01T10:00:00.000Z');
   assert.equal(a, '2025-01-01_10-00-00-000');
   assert.equal(b, a);
   assert.equal(c, a);
@@ -118,11 +118,11 @@ test('parseStamp: 宽松匹配', () => {
 test('normalizeRawStamp: ISO → 磁盘格式', () => {
   assert.equal(
     normalizeRawStamp('2025-01-01T10:00:00.399000+08:00'),
-    '2025-01-01 10:00:00.399+08:00'
+    '2025-01-01T10:00:00.399+08:00'
   );
   assert.equal(
     normalizeRawStamp('2025-01-01T10:00:00Z'),
-    '2025-01-01 10:00:00.000Z'
+    '2025-01-01T10:00:00.000Z'
   );
   assert.equal(normalizeRawStamp('not a date'), null);
 });
@@ -163,16 +163,16 @@ test('fmtTime 输出 HH:mm', () => {
   assert.equal(fmtTime(ms), '09:05');
 });
 
-test('fmtStampLocal 输出 YYYY-MM-DD HH:mm:ss.SSS', () => {
+test('fmtStampLocal 输出 YYYY-MM-DDTHH:mm:ss.SSS', () => {
   const ms = new Date(2026, 8, 17, 9, 5, 3, 7).getTime();
-  assert.equal(fmtStampLocal(ms), '2026-09-17 09:05:03.007');
+  assert.equal(fmtStampLocal(ms), '2026-09-17T09:05:03.007');
 });
 
 
-test('fmtStamp 格式为 YYYY-MM-DD HH:mm:ss.SSS±HH:MM', () => {
+test('fmtStamp 格式为 YYYY-MM-DDTHH:mm:ss.SSS±HH:MM', () => {
   const ts = new Date(2026, 8, 17, 9, 5, 3, 7).getTime();
   const s = fmtStamp(ts);
-  assert.match(s, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$/);
+  assert.match(s, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$/);
 });
 
 test('fmtFull 输出中文长日期', () => {
@@ -310,7 +310,7 @@ test('entryBlockId fallback 到本地字段', () => {
 test('stampForWrite 无 _rawStamp / _tzOffset → 用本地时区', () => {
   const e = { createdAt: Date.parse('2025-01-01T02:00:00.000Z') };
   const s = stampForWrite(e);
-  assert.match(s, /^2025-01-01 \d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$/);
+  assert.match(s, /^2025-01-01T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$/);
 });
 
 /* ============================================================
