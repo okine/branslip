@@ -124,6 +124,17 @@ function mappingToIR(mapping) {
   return out;
 }
 
+/* 新版 DeepSeek 导出：扁平 messages[] + parent_id，不再有 mapping。 */
+function messagesToIR(messages) {
+  return (messages || [])
+    .filter(m => m && m.id != null)
+    .map(m => makeMessage(String(m.id), parseMs(m.inserted_at || m.created_at), {
+      parentId: m.parent_id != null ? String(m.parent_id) : null,
+      childrenIds: null,
+      raw: m,
+    }));
+}
+
 /* ---------- 内容提取 ---------- */
 
 function deepSeekContentText(v) {
@@ -154,11 +165,20 @@ function deepSeekFiles(ff) {
   for (const file of list) {
     if (!file) continue;
     const obj = (typeof file === 'string') ? { name: file } : file;
-    const name = obj.file_name || obj.name || obj.filename || obj.path;
+    const name = obj.file_name || obj.name || obj.filename || obj.path ||
+      (obj.export_path ? String(obj.export_path).split('/').pop() : '');
     if (name) out.push({ name: String(name), raw: obj });
     else out.push({ name: '', raw: obj });
   }
   return out;
+}
+
+function deepSeekFileTarget(file) {
+  const raw = file && file.raw || {};
+  const name = String((file && file.name) || raw.file_name || 'file');
+  const base = name.replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 90) || 'file';
+  const id = String(raw.id || raw.file_id || '').replace(/[^A-Za-z0-9_-]/g, '');
+  return 'deepseek_' + (id || 'file') + '_' + base;
 }
 
 function deepSeekRawFragment(f) {
@@ -190,7 +210,7 @@ function deepSeekFallbackFragments(msg) {
   return out;
 }
 
-function extractDeepSeekContent(msg) {
+export function extractDeepSeekContent(msg) {
   if (!msg || typeof msg !== 'object') return { role: 'skip' };
 
   const rawFrags = Array.isArray(msg.fragments) ? msg.fragments
@@ -205,8 +225,8 @@ function extractDeepSeekContent(msg) {
   const reqTexts = [];
   const aiParts = [];
   const unknown = [];
-  const fileNames = [];
-  const seenNames = new Set();
+  const fileItems = [];
+  const seenFiles = new Set();
 
   for (const f of frags) {
     if (!f || typeof f !== 'object') {
@@ -223,9 +243,14 @@ function extractDeepSeekContent(msg) {
       if (text) aiParts.push({ type, text });
     } else if (type === 'FILE') {
       for (const file of deepSeekFiles(f)) {
-        if (!file.name || seenNames.has(file.name)) continue;
-        seenNames.add(file.name);
-        fileNames.push(file.name);
+        const rawFile = file.raw || {};
+        const target = deepSeekFileTarget(file);
+        const source = rawFile.export_path || null;
+        const image = !!(rawFile.is_image || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(file.name || ''));
+        const key = (rawFile.id || target) + '\u0000' + target;
+        if (seenFiles.has(key)) continue;
+        seenFiles.add(key);
+        fileItems.push({ name: file.name || 'file', target, source, image: !!source && image });
       }
     } else {
       /* 未知 fragment 不静默 skip：原样保留在可读的 raw 块里。 */
@@ -235,15 +260,28 @@ function extractDeepSeekContent(msg) {
 
   const out = [];
   let reqText = reqTexts.join('\n\n');
-  if (fileNames.length) {
-    const files = fileNames.map(n => '📎 ' + n).join('\n');
-    reqText = files + (reqText ? '\n\n' + reqText : '');
+  const userFiles = [];
+  const aiFiles = [];
+  const role = String(msg.role || '').toUpperCase();
+  const hasRequest = reqTexts.length > 0 || frags.some(x => String((x && x.type) || '').toUpperCase() === 'REQUEST');
+  const fileText = item => item.image
+    ? '![' + item.name + '](attachments/' + item.target + ')'
+    : '📎 ' + item.name;
+  for (const item of fileItems) {
+    if (role === 'USER' || (!role && hasRequest)) {
+      userFiles.push(item);
+      reqText = (reqText ? reqText + '\n\n' : '') + fileText(item);
+    } else {
+      aiFiles.push(item);
+    }
   }
   if (reqText) out.push({
     role: 'user', text: reqText, thinking: '',
     rawStamp, tzOffset: tz,
+    copy: userFiles.filter(x => x.source).map(x => ({ source: x.source, target: x.target })),
   });
 
+  const aiFileText = aiFiles.map(fileText).join('\n\n');
   const aiBody = aiParts.map(part => {
     if (part.type === 'THINK') {
       const safe = String(part.text).replace(/(^|\n):::/g, '$1\\:::');
@@ -253,13 +291,24 @@ function extractDeepSeekContent(msg) {
   }).filter(Boolean).join('\n\n');
 
   const extra = unknown.join('\n\n');
-  const body = aiBody && extra ? aiBody + '\n\n' + extra : (aiBody || extra);
+  const aiKnown = [aiFileText, aiBody].filter(Boolean).join('\n\n');
+  const body = aiKnown && extra ? aiKnown + '\n\n' + extra : (aiKnown || extra);
   if (body) out.push({
     role: 'assistant', text: body, thinking: '',
     rawStamp, tzOffset: tz,
+    copy: aiFiles.filter(x => x.source).map(x => ({ source: x.source, target: x.target })),
   });
 
   return out.length ? out : { role: 'skip' };
+}
+
+/* 新版导出的 chat_session_index.json：只有目录，不含正文。 */
+export function parseDeepSeekIndex(jsonText) {
+  let v;
+  try { v = JSON.parse(jsonText); } catch (e) { return null; }
+  if (!Array.isArray(v) || !v.length) return null;
+  if (!v.every(x => x && typeof x === 'object' && x.id && 'message_count' in x)) return null;
+  return v;
 }
 
 /* ---------- 顶层 API ---------- */
@@ -269,17 +318,21 @@ export function parseDeepSeekExport(jsonText) {
   const convs = [];
 
   for (const conv of raw) {
-    if (!conv || typeof conv !== 'object' || !conv.mapping) {
-      continue;
-    }
+    if (!conv || typeof conv !== 'object') continue;
+    const hasMapping = !!conv.mapping;
+    const hasMessages = Array.isArray(conv.messages);
+    if (!hasMapping && !hasMessages) continue;
 
-    const tree = buildMessageTree(mappingToIR(conv.mapping));
+    const tree = buildMessageTree(hasMapping
+      ? mappingToIR(conv.mapping)
+      : messagesToIR(conv.messages));
 
     const title = String(conv.title || '导入的对话').trim() || '导入的对话';
-    const sourceCreatedAt = parseMs(conv.inserted_at) || NaN;
+    const sourceCreatedAt = parseMs(conv.inserted_at || conv.created_at) || NaN;
 
     const root = extractFromTree(tree, {
       title, sourceCreatedAt, extractContent: extractDeepSeekContent,
+      activeId: conv.current_message_id != null ? String(conv.current_message_id) : null,
     });
 
     if (!root.entries.length && !root.branches.length) {

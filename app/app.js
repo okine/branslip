@@ -110,12 +110,15 @@ function renderTop() {
   const p = pathOf(n);
   if (isNarrow()) {
     /* 手机上不铺整条路径：只显示本话题名 + 下拉尖角 */
-    cr.innerHTML = '<button class="crumb cur crumb-drop" data-crumb-menu="1" title="切换话题路径">' +
-      esc(n.title) + I.chevDown + '</button>';
+    cr.innerHTML = '<span class="crumb-group">' +
+      '<button class="crumb cur" data-crumb-current="1" title="定位当前话题">' + esc(n.title) + '</button>' +
+      '<button class="crumb crumb-chev" data-crumb-menu="1" aria-label="切换话题路径" title="切换话题路径">' + I.chevDown + '</button>' +
+    '</span>';
   } else {
     cr.innerHTML = p.map((x, i) =>
       '<button class="crumb' + (i === p.length - 1 ? ' cur' : '') +
-      '" data-crumb="' + x.id + '">' + esc(x.title) + '</button>'
+      '" data-crumb="' + x.id + '"' +
+      (i === p.length - 1 ? ' data-crumb-current="1"' : '') + '>' + esc(x.title) + '</button>'
     ).join('<span class="sep">›</span>');
   }
   $('#topCount').textContent = n.entries.length + ' 条记录';

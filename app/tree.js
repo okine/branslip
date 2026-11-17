@@ -357,6 +357,53 @@ function topicMenu(anchor, n) {
 
 /* 滚动层级树时收起菜单，避免菜单跟着旧位置悬空 */
 treeBox.addEventListener('scroll', closeMenu, { passive: true });
+const locateBtn = $('#locateTopicBtn');
+if (locateBtn) {
+  locateBtn.innerHTML = I.locate;
+  locateBtn.addEventListener('click', locateCurrentTopic);
+}
+export function locateCurrentTopic() {
+  if (Store.ui.merged) { toast('当前是合并视图，没有单一话题'); return; }
+  const id = Store.ui.selectedId;
+  const n = findNode(id);
+  if (!id || !n) return;
+
+  /* 搜索面板打开时树是隐藏的，先退出搜索再定位。 */
+  clearSearch();
+
+  /* 展开当前话题的所有祖先，否则折叠时它根本不在 DOM 里。 */
+  let p = findParent(id);
+  while (p && p.id !== '__root__') {
+    Store.collapsed.delete(pOf(p));
+    p = findParent(p.id);
+  }
+
+  const selId = String(id).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const selector = '.node-row[data-id="' + selId + '"]';
+  let row = treeBox.querySelector(selector);
+  if (!row) {
+    renderTree();
+    row = treeBox.querySelector(selector);
+  }
+  if (!row) return;
+
+  if (typeof window !== 'undefined' && window.matchMedia &&
+      window.matchMedia('(max-width: 860px)').matches) {
+    openSide();
+  }
+
+  const box = treeBox.getBoundingClientRect();
+  const r = row.getBoundingClientRect();
+  if (r.top < box.top || r.bottom > box.bottom) {
+    treeBox.scrollTo({
+      top: treeBox.scrollTop + r.top - box.top - (treeBox.clientHeight - r.height) / 2,
+      behavior: 'smooth',
+    });
+  }
+  row.classList.add('locate-flash');
+  setTimeout(() => row.classList.remove('locate-flash'), 900);
+}
+
 export function startCreate(parentId) {
   const pn = findNode(parentId);
   if (pn && pn.id !== '__root__') Store.collapsed.delete(pOf(pn));
@@ -643,6 +690,8 @@ document.addEventListener('keydown', e => {
  * ============================================================ */
 
 $('#crumbs').addEventListener('click', e => {
+  const cur = e.target.closest('[data-crumb-current]');
+  if (cur) { locateCurrentTopic(); return; }
   const c = e.target.closest('[data-crumb]'); if (c) select(c.dataset.crumb);
 });
 

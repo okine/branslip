@@ -19,6 +19,7 @@ export const I = {
   move:  svg('<path d="M4 18c0-6 4-9 10-9"/><path d="M11 5l4 4-4 4"/>', 14),
   send:  svg('<path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>', 17, 2),
   search:svg('<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>', 15),
+  locate: svg('<circle cx="12" cy="12" r="6"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>', 14, 1.8),
   menu:  svg('<path d="M4 7h16M4 12h16M4 17h16"/>', 19),
   folder:svg('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>', 14),
   refresh:svg('<path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v6h-6"/>', 13),

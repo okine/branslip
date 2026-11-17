@@ -244,6 +244,7 @@ export function extractFromTree(tree, opts) {
     title,
     sourceCreatedAt,
     extractContent,
+    activeId = null,
     tzOffset = -new Date().getTimezoneOffset(),
   } = opts;
 
@@ -263,7 +264,8 @@ export function extractFromTree(tree, opts) {
   };
 
   rescueInferredTimes(tree, baseMs);
-  walkSubtree(tree, null, root, extractContent, tzOffset);
+  const activeSet = activePathSet(tree, activeId);
+  walkSubtree(tree, null, root, extractContent, tzOffset, activeSet);
   normalizeAll(root);
   syncTopicTimes(root, Number.isFinite(sourceCreatedAt) && sourceCreatedAt > 0 ? sourceCreatedAt : 0);
   freezeWriteStamps(root);
@@ -339,7 +341,22 @@ function contentItemsOf(node, extractContent) {
   return items;
 }
 
-function walkSubtree(node, parentUser, ctx, extractContent, defaultTz) {
+function activePathSet(root, activeId) {
+  if (!activeId) return null;
+  const path = [];
+  const find = n => {
+    if (!n) return false;
+    if (String(n.id) === String(activeId)) { path.push(n); return true; }
+    for (const c of n.children || []) {
+      if (find(c)) { path.push(n); return true; }
+    }
+    return false;
+  };
+  if (!find(root)) return null;
+  return new Set(path.map(n => String(n.id)));
+}
+
+function walkSubtree(node, parentUser, ctx, extractContent, defaultTz, activeSet) {
   let myUser = parentUser;
 
   if (node.message && node.at) {
@@ -372,6 +389,7 @@ function walkSubtree(node, parentUser, ctx, extractContent, defaultTz) {
           _scope: ctx.scopeId,
         };
         if (rawStamp) entry._rawStamp = rawStamp;
+        if (item.copy && item.copy.length) entry._copy = item.copy;
         ctx.entries.push(entry);
         myUser = entry;
 
@@ -393,6 +411,7 @@ function walkSubtree(node, parentUser, ctx, extractContent, defaultTz) {
           _scope: ctx.scopeId,
         };
         if (rawStamp) entry._rawStamp = rawStamp;
+        if (item.copy && item.copy.length) entry._copy = item.copy;
         ctx.entries.push(entry);
       }
     }
@@ -414,8 +433,16 @@ function walkSubtree(node, parentUser, ctx, extractContent, defaultTz) {
     return b.at - a.at;
   });
 
+  if (activeSet) {
+    const activeChild = children.find(c => activeSet.has(String(c.id)));
+    if (activeChild) {
+      const ai = children.indexOf(activeChild);
+      if (ai > 0) { children.splice(ai, 1); children.unshift(activeChild); }
+    }
+  }
+
   const beforeMain = ctx.entries.length;
-  walkSubtree(children[0], myUser, ctx, extractContent, defaultTz);
+  walkSubtree(children[0], myUser, ctx, extractContent, defaultTz, activeSet);
 
   /* 主路径走完后先记住"主回答"这条 —— 后面用它当变体的锚点 */
   const anchorReply = findAnchorReply(ctx, myUser, beforeMain);
@@ -430,7 +457,7 @@ function walkSubtree(node, parentUser, ctx, extractContent, defaultTz) {
       branches: [],
       _fromUser: myUser,
     };
-    walkSubtree(children[i], myUser, subCtx, extractContent, defaultTz);
+    walkSubtree(children[i], myUser, subCtx, extractContent, defaultTz, activeSet);
     if (!subCtx.entries.length) continue;
     subCtx.createdAtMs = subCtx.entries[0].createdAt;
     subCtx.title = branchTitle(subCtx);
@@ -697,8 +724,11 @@ async function copyOnePhoto(photoDir, attachmentsDir, fname) {
 }
 
 async function copyOneSticker(photoDir, attachmentsDir, source, target) {
-  const base = String(source).split('/').pop();
-  const candidates = (base && base !== source) ? [source, base] : [source];
+  const src = String(source || '').replace(/\\/g, '/');
+  const base = src.split('/').pop();
+  const candidates = [src];
+  if (src.startsWith('chat_sessions/')) candidates.push(src.slice('chat_sessions/'.length));
+  if (base && base !== src) candidates.push(base);
   let lastErr = null;
   for (const rel of candidates) {
     try {
@@ -709,7 +739,7 @@ async function copyOneSticker(photoDir, attachmentsDir, source, target) {
     } catch (err) { lastErr = err; }
   }
   console.warn('[import] 贴纸复制失败', source, lastErr,
-    '（若选的是 photos 子目录，请改选导出根目录）');
+    '（若选的是子目录，请改选导出根目录）');
   return false;
 }
 
@@ -739,10 +769,14 @@ async function writeTopic(parentDir, topic, source, opts) {
     const jobs = [];
     const seen = new Set();
     for (const e of topic.entries) {
+      const copied = new Set((e._copy || []).map(c => c && c.target).filter(Boolean));
       for (const ref of imageRefs(e.text)) {
         if (!ref.path.startsWith('attachments/')) continue;
         if (String(ref.alt || '').startsWith('sticker:')) continue;
         const fname = ref.path.slice('attachments/'.length);
+        /* DeepSeek 等来源的图片已经由 _copy 指定了具体导出路径，
+           不要再用 photos/ 根目录规则重复复制一次。 */
+        if (copied.has(fname)) continue;
         if (seen.has('p:' + fname)) continue;
         seen.add('p:' + fname);
         jobs.push({ kind: 'photo', fname });
@@ -784,6 +818,8 @@ async function writeTopic(parentDir, topic, source, opts) {
   /* 把导入的置顶/取消置顶写成 :::pin 服务记录；每个目标每种动作只保留首尾两条。 */
   const pinEvents = Array.isArray(topic._pinEvents) ? topic._pinEvents : [];
   if (pinEvents.length) {
+    /* 动态加载 pins，避免 import-runtime 在无 DOM 的解析测试里加载 UI 模块。 */
+    const { makePinLogText, firstLastByTarget } = await import('./pins.js');
     const ref = '~' + topicCreatedAt;
     const logs = firstLastByTarget(pinEvents, target => entryBlockId(target));
     for (const ev of logs) {
@@ -877,10 +913,12 @@ function countWork(topic, countCopies) {
   for (const e of topic.entries) {
     mset.add(monthKeyOfEntry(e));
     if (countCopies) {
+      const copied = new Set((e._copy || []).map(c => c && c.target).filter(Boolean));
       for (const ref of imageRefs(e.text)) {
         if (ref.path.startsWith('attachments/') &&
             !String(ref.alt || '').startsWith('sticker:')) {
-          seen.add('p:' + ref.path);
+          const fname = ref.path.slice('attachments/'.length);
+          if (!copied.has(fname)) seen.add('p:' + ref.path);
         }
       }
       for (const c of (e._copy || [])) {
@@ -1098,9 +1136,9 @@ function pickConversations(openTopicPicker, conversations) {
 }
 
 
-async function showImportConfirmDialog(source, count, ui) {
+async function showImportConfirmDialog(source, count, ui, fixedPhotoDir) {
   return new Promise(resolve => {
-    let photoDir = null;
+    let photoDir = fixedPhotoDir || null;
     let confirmed = false;
 
     const sourceName = {
@@ -1111,7 +1149,7 @@ async function showImportConfirmDialog(source, count, ui) {
       `<h3>确认导入</h3>
        <p class="sub">检测到 <b>${sourceName}</b> 导出格式。<br>包含 <b>${count}</b> 个话题。</p>
        <div style="margin:14px 0; padding:12px; background:var(--paper); border-radius:8px;">
-         <p style="font-size:12.5px; margin-bottom:8px; color:var(--ink2);">如果导出包含图片/贴纸，请选择导出根目录（里面有 photos、stickers 的那一层）：</p>
+         <p style="font-size:12.5px; margin-bottom:8px; color:var(--ink2);">如果导出包含图片/文件，请选择导出根目录（DeepSeek 是包含 chat_sessions 的那一层；Telegram 是包含 photos 的那一层）：</p>
          <div style="display:flex; align-items:center; gap:10px;">
            <button type="button" class="m-btn ghost" id="pickPhotoBtn" style="padding:6px 12px; font-size:12px; flex:none;">选择导出目录</button>
            <span id="photoStatus" style="font-size:12px; color:var(--ink3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">未选择（仅保留文字与路径）</span>
@@ -1124,11 +1162,16 @@ async function showImportConfirmDialog(source, count, ui) {
       () => resolve({ ok: confirmed, photoDir })
     );
 
+    if (fixedPhotoDir) {
+      const st = md.querySelector('#photoStatus');
+      if (st) st.textContent = '已选择导出目录';
+    }
+
     md.querySelector('#pickPhotoBtn').addEventListener('click', async () => {
       try {
         if (PLATFORM.isTauri) {
           const dir = await invoke('plugin:dialog|open', {
-            options: { directory: true, multiple: false, title: '选择图片文件夹' },
+            options: { directory: true, multiple: false, title: '选择导出根目录' },
           });
           if (dir) {
             photoDir = dir;
@@ -1246,6 +1289,121 @@ function showImportSummary(ui, stats, meta) {
   if (btn) btn.addEventListener('click', () => ui.closeModal());
 }
 
+function detectDeepSeekIndex(text) {
+  try {
+    const v = JSON.parse(text);
+    if (!Array.isArray(v) || !v.length) return null;
+    if (!v.every(x => x && typeof x === 'object' && x.id && 'message_count' in x)) return null;
+    return v;
+  } catch (e) { return null; }
+}
+
+async function pickImportRoot(ui) {
+  return new Promise(resolve => {
+    let settled = false;
+    let root = null;
+    const finish = v => {
+      if (settled) return;
+      settled = true;
+      resolve(v);
+    };
+
+    const md = ui.openModal(
+      '<h3>选择导出目录</h3>' +
+      '<p class="sub">请选择 DeepSeek 导出根目录，也就是包含 <code>chat_sessions</code> 的那一层。</p>' +
+      '<div class="modal-btns">' +
+        '<button class="m-btn ghost" data-close>取消</button>' +
+        '<button class="m-btn" data-pick-root style="background:var(--accent);color:#F5F1E4">选择目录</button>' +
+      '</div>',
+      () => finish(root)
+    );
+    if (!md) { finish(null); return; }
+
+    md.querySelector('[data-close]').addEventListener('click', () => ui.closeModal());
+    md.querySelector('[data-pick-root]').addEventListener('click', async () => {
+      try {
+        let dir = null;
+        if (PLATFORM.isTauri) {
+          dir = await invoke('plugin:dialog|open', {
+            options: { directory: true, multiple: false, title: '选择 DeepSeek 导出目录' },
+          });
+        } else if (typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function') {
+          /* 必须直接在按钮点击事件里调用；经过 await 之后浏览器会丢失用户手势。 */
+          dir = await window.showDirectoryPicker({ mode: 'read' });
+        } else {
+          ui.toast('当前浏览器不支持选择目录');
+          return;
+        }
+        if (dir) {
+          root = dir;
+          ui.closeModal();
+        }
+      } catch (e) {
+        if (e && e.name === 'AbortError') return;
+        ui.toast('选择目录失败：' + ((e && e.message) || e));
+      }
+    });
+  });
+}
+
+function pickIndexEntries(openTopicPicker, entries) {
+  return new Promise(resolve => {
+    let settled = false;
+    const done = v => { if (!settled) { settled = true; resolve(v); } };
+    const items = entries.map((x, i) => ({
+      id: String(i),
+      title: x.title || '未命名',
+      subtitle: (x.message_count || 0) + ' 条' +
+        (x.updated_at ? ' · ' + String(x.updated_at).slice(0, 10) : ''),
+    }));
+    const md = openTopicPicker({
+      mode: 'multi',
+      search: true,
+      title: '选择要导入的 DeepSeek 会话',
+      hint: '索引中有 ' + entries.length + ' 个会话，只导入勾选的。',
+      okText: '导入选中',
+      items,
+      preselect: [],
+      onPickMulti: ids => done(ids.map(Number)),
+    });
+    const root = typeof document !== 'undefined' ? document.getElementById('modalRoot') : null;
+    if (root && md && typeof MutationObserver === 'function') {
+      const obs = new MutationObserver(() => {
+        if (!md.isConnected) { obs.disconnect(); done(null); }
+      });
+      obs.observe(root, { childList: true, subtree: true });
+    }
+  });
+}
+
+async function loadIndexSessions(root, entries, parseFn) {
+  const convs = [];
+  const failures = [];
+  for (const entry of entries) {
+    const id = String(entry.id);
+    let text = null;
+    for (const rel of ['chat_sessions/' + id + '.json', id + '.json']) {
+      try {
+        const fh = await resolveFile(root, rel);
+        text = await (await fh.getFile()).text();
+        break;
+      } catch (e) { /* try next */ }
+    }
+    if (text == null) {
+      failures.push('找不到会话文件：' + (entry.title || id));
+      continue;
+    }
+    try {
+      const parsed = parseFn(text);
+      if (parsed && parsed.length) convs.push(...parsed);
+      else failures.push('没有可导入内容：' + (entry.title || id));
+    } catch (e) {
+      failures.push('解析失败：' + (entry.title || id) + '（' + ((e && e.message) || e) + '）');
+    }
+  }
+  return { convs, failures };
+}
+
 export async function runImportFile(file, deps) {
   deps = deps || {};
   const attempts = deps.attempts || [];
@@ -1258,11 +1416,13 @@ export async function runImportFile(file, deps) {
   /* ★ 读文件 + 解析可能很慢（大导出几十 MB）。先点亮小灯并让出一帧，
      否则用户看到的是"点了导入但完全没反应"。 */
   let conversations = null, source = '', importFn = null;
+  let indexedEntries = null, fixedRoot = null, indexedMode = false;
   const parseInfo = {
     skippedEmptyConversations: 0,
     skippedEmptyMessages: 0,
     missingParents: 0,
     missingFileNames: 0,
+    indexFailures: [],
   };
   beginBusy('正在解析聊天记录');
   try {
@@ -1303,13 +1463,16 @@ export async function runImportFile(file, deps) {
         const text = await file.text();
         await nextFrame();
         setBusyLabel('正在解析聊天记录');
-        for (const [src, parseFn, imp] of attempts) {
-          try {
-            conversations = parseFn(text, parseInfo);
-            source = src;
-            importFn = imp;
-            break;
-          } catch (e) {}
+        indexedEntries = detectDeepSeekIndex(text);
+        if (!indexedEntries) {
+          for (const [src, parseFn, imp] of attempts) {
+            try {
+              conversations = parseFn(text, parseInfo);
+              source = src;
+              importFn = imp;
+              break;
+            } catch (e) {}
+          }
         }
       }
     } finally {
@@ -1319,14 +1482,44 @@ export async function runImportFile(file, deps) {
     endBusy();
   }
 
-  if (!conversations) {
-    ui.toast('无法识别的文件格式');
+  if (indexedEntries) {
+    try {
+    const root = await pickImportRoot(ui);
+    if (!root) { ui.toast('已取消选择导出目录'); return; }
+    const { openTopicPicker } = await import('./ui-topicPicker.js');
+    const picked = await pickIndexEntries(openTopicPicker, indexedEntries);
+    if (picked === null) { ui.toast('已取消导入'); return; }
+    if (!picked.length) { ui.toast('没有选中任何会话'); return; }
+    const selected = picked.map(i => indexedEntries[i]).filter(Boolean);
+    const ds = attempts.find(a => a[0] === 'deepseek');
+    if (!ds) { ui.toast('缺少 DeepSeek 解析器'); return; }
+    beginBusy('正在读取选中的会话');
+    try {
+      const loaded = await loadIndexSessions(root, selected, ds[1]);
+      conversations = loaded.convs;
+      source = 'deepseek';
+      importFn = ds[2];
+      fixedRoot = root;
+      indexedMode = true;
+      parseInfo.indexFailures = loaded.failures;
+    } finally {
+      endBusy();
+    }
+    } catch (e) {
+      console.error('[import-index]', e);
+      ui.toast('索引导入失败：' + ((e && e.message) || e));
+      return;
+    }
+  }
+
+  if (!conversations || !conversations.length) {
+    ui.toast(indexedEntries ? '选中的会话没有可导入内容' : '无法识别的文件格式');
     return;
   }
 
   /* ★ 一个文件里通常有多个对话：先让用户按标题挑要导入哪些。
      这些话题还没进库，所以用"外部列表"模式 + 搜索，不走话题树。 */
-  if (conversations.length > 1) {
+  if (conversations.length > 1 && !indexedMode) {
     const { openTopicPicker } = await import('./ui-topicPicker.js');
     const picked = await pickConversations(openTopicPicker, conversations);
     if (picked === null) { ui.toast('已取消导入'); return; }
@@ -1334,7 +1527,7 @@ export async function runImportFile(file, deps) {
     conversations = picked.map(i => conversations[i]);
   }
 
-  const { ok, photoDir } = await showImportConfirmDialog(source, conversations.length, ui);
+  const { ok, photoDir } = await showImportConfirmDialog(source, conversations.length, ui, fixedRoot);
   if (!ok) return;
 
   const hint = conversations.length === 1
@@ -1363,6 +1556,7 @@ export async function runImportFile(file, deps) {
         stats.failures.push('有 ' + parseInfo.missingParents +
           ' 条消息的父消息缺失，已按时间顺序线性化');
       }
+      for (const f of (parseInfo.indexFailures || [])) stats.failures.push(f);
       if (parseInfo.missingFileNames) {
         stats.failures.push('有 ' + parseInfo.missingFileNames +
           ' 个 Claude 附件只有 file_uuid/无名，仅保留占位名');

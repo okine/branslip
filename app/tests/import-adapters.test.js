@@ -451,3 +451,66 @@ test('parseTelegramStream：与同步解析结果一致', async () => {
     if (ra) assert.equal(rb.text, ra.text);
   }
 });
+
+
+/* ---------- DeepSeek 新版 messages[] 导出 ---------- */
+
+test('parseDeepSeekExport：新版 messages[] + 导出图片路径', () => {
+  const T = '2026-11-17T10:00:00.000Z';
+  const json = JSON.stringify({
+    id: 'new-1',
+    title: '新版对话',
+    current_message_id: 2,
+    inserted_at: T,
+    messages: [
+      {
+        id: 1, parent_id: null, role: 'USER', status: 'FINISHED',
+        inserted_at: T,
+        fragments: [
+          { type: 'REQUEST', content: '看看这张图' },
+          {
+            type: 'FILE',
+            files: [{
+              id: 'f1', file_name: 'a.png', is_image: true,
+              export_path: 'chat_sessions/new-1_files/f1_a.png',
+            }],
+          },
+        ],
+      },
+      {
+        id: 2, parent_id: 1, role: 'ASSISTANT', status: 'FINISHED',
+        inserted_at: T,
+        fragments: [
+          { type: 'THINK', content: '看图' },
+          { type: 'RESPONSE', content: '这是一张图。' },
+        ],
+      },
+    ],
+  });
+  const root = parseDeepSeekExport(json)[0].root;
+  assert.equal(root.entries.length, 2);
+  assert.match(root.entries[0].text, /!\[a\.png\]\(attachments\/deepseek_f1_a\.png\)/);
+  assert.equal(root.entries[0]._copy[0].source,
+    'chat_sessions/new-1_files/f1_a.png');
+  assert.match(root.entries[1].text, /:::think\n看图\n:::/);
+});
+
+
+test('parseDeepSeekExport：current_message_id 选择主分支', () => {
+  const T = '2026-11-17T10:00:00.000Z';
+  const json = JSON.stringify({
+    id: 'new-2', title: '分支选择', current_message_id: 3,
+    messages: [
+      { id: 1, parent_id: null, role: 'USER', inserted_at: T,
+        fragments: [{ type: 'REQUEST', content: '问' }] },
+      { id: 2, parent_id: 1, role: 'ASSISTANT', inserted_at: T,
+        fragments: [{ type: 'RESPONSE', content: '旧回答' }] },
+      { id: 3, parent_id: 1, role: 'ASSISTANT', inserted_at: T,
+        fragments: [{ type: 'RESPONSE', content: '当前回答' }] },
+    ],
+  });
+  const root = parseDeepSeekExport(json)[0].root;
+  assert.equal(root.entries[1].text, '当前回答');
+  assert.equal(root.branches.length, 0);
+  assert.equal(root.entries.filter(e => e._altOf).length, 1);
+});
